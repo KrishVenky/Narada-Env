@@ -1,5 +1,5 @@
 """
-ClinDetect: FastAPI server (WebSocket primary, HTTP for debug).
+Narada: FastAPI server (WebSocket primary, HTTP for debug).
 
 Port is read from os.environ["PORT"], default 7860 for HF Spaces.
 WORKERS=1 is mandatory — sessions are in-memory per WebSocket connection.
@@ -18,8 +18,8 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 
 from ..graph import get_graph
-from ..models import ClinDetectAction, ClinDetectState, StepResult
-from .environment import ClinDetectEnvironment
+from ..models import NaradaAction, NaradaState, StepResult
+from .environment import NaradaEnvironment
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -27,18 +27,18 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("ClinDetect starting — loading graph ...")
+    logger.info("Narada starting — loading graph ...")
     graph = get_graph()  # blocks until loaded; ~5s on cold start
     logger.info(
         "Graph ready: %d nodes loaded",
         len(graph.nodes),
     )
     yield
-    logger.info("ClinDetect shutting down.")
+    logger.info("Narada shutting down.")
 
 
 app = FastAPI(
-    title="ClinDetect",
+    title="Narada",
     description=(
         "OpenEnv: LLM agent navigates a gene-disease knowledge graph to diagnose "
         "rare diseases. Three task tiers: monogenic (easy), oligogenic (medium), "
@@ -53,7 +53,7 @@ app = FastAPI(
 
 @app.get("/health")
 async def health() -> Dict[str, str]:
-    return {"status": "healthy", "version": "1.0.0", "environment": "clindetect"}
+    return {"status": "healthy", "version": "1.0.0", "environment": "narada"}
 
 
 # ── WebSocket (primary transport) ─────────────────────────────────────────────
@@ -69,11 +69,11 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         {"type": "state"}
       Server → Client:
         {"type": "observation", "data": StepResult}
-        {"type": "state",       "data": ClinDetectState}
+        {"type": "state",       "data": NaradaState}
         {"type": "error",       "message": "..."}
     """
     await websocket.accept()
-    env = ClinDetectEnvironment()
+    env = NaradaEnvironment()
     logger.info("WS session opened")
 
     try:
@@ -102,7 +102,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 
             elif mtype == "step":
                 try:
-                    action = ClinDetectAction.model_validate(msg.get("action", {}))
+                    action = NaradaAction.model_validate(msg.get("action", {}))
                     result = env.step(action)
                     await websocket.send_text(
                         json.dumps({"type": "observation", "data": result.model_dump()})
@@ -138,7 +138,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 
 # ── HTTP debug endpoints (stateless, not for concurrent use) ─────────────────
 
-_http_env = ClinDetectEnvironment()
+_http_env = NaradaEnvironment()
 
 
 @app.post("/reset", response_model=StepResult)
@@ -147,15 +147,15 @@ async def http_reset(task_type: Optional[str] = None, seed: Optional[int] = None
 
 
 @app.post("/step", response_model=StepResult)
-async def http_step(action: ClinDetectAction) -> StepResult:
+async def http_step(action: NaradaAction) -> StepResult:
     try:
         return _http_env.step(action)
     except RuntimeError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@app.get("/state", response_model=ClinDetectState)
-async def http_state() -> ClinDetectState:
+@app.get("/state", response_model=NaradaState)
+async def http_state() -> NaradaState:
     return _http_env.state()
 
 
@@ -166,7 +166,7 @@ _WEB_UI = """<!DOCTYPE html>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>ClinDetect | OpenEnv</title>
+  <title>Narada | OpenEnv</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { background: #0a0e1a; color: #cdd9e5; font-family: 'Courier New', monospace; padding: 20px; }
@@ -195,7 +195,7 @@ _WEB_UI = """<!DOCTYPE html>
   </style>
 </head>
 <body>
-  <h1>ClinDetect — Rare Disease Diagnosis Agent</h1>
+  <h1>Narada — Rare Disease Diagnosis Agent</h1>
   <p class="sub">OpenEnv | Navigate the gene-disease knowledge graph to find the causal variant</p>
 
   <div class="grid">
@@ -208,7 +208,7 @@ _WEB_UI = """<!DOCTYPE html>
   <div class="phenotypes" id="pheno-box">Patient phenotypes will appear here after RESET.</div>
 
   <div class="terminal" id="term">
-    <span class="info">[CLINDETECT] Ready. Select a task and press RESET.</span><br>
+    <span class="info">[NARADA] Ready. Select a task and press RESET.</span><br>
   </div>
 
   <div class="controls">
@@ -242,7 +242,7 @@ _WEB_UI = """<!DOCTYPE html>
     function connect() {
       const proto = location.protocol === 'https:' ? 'wss' : 'ws';
       ws = new WebSocket(`${proto}://${location.host}/ws`);
-      ws.onopen = () => log('Connected to ClinDetect environment.', 'info');
+      ws.onopen = () => log('Connected to Narada environment.', 'info');
       ws.onclose = () => { log('Disconnected.', 'err'); ws = null; };
       ws.onmessage = (e) => {
         const msg = JSON.parse(e.data);
@@ -327,7 +327,7 @@ def run() -> None:
     port = int(os.environ.get("PORT", 7860))
     host = os.environ.get("HOST", "0.0.0.0")
     workers = int(os.environ.get("WORKERS", 1))
-    uvicorn.run("clindetect.server.app:app", host=host, port=port, workers=workers)
+    uvicorn.run("narada.server.app:app", host=host, port=port, workers=workers)
 
 
 if __name__ == "__main__":

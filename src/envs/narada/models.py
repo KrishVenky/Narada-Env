@@ -1,5 +1,5 @@
 """
-ClinDetect: Pydantic v2 data models.
+Narada: Pydantic v2 data models.
 
 All observation/action/state models live here.
 No imports from server/ — models are shared between client, server, and inference.
@@ -36,7 +36,7 @@ class Variant(BaseModel):
 
 # ── Action ────────────────────────────────────────────────────────────────────
 
-class ClinDetectAction(BaseModel):
+class NaradaAction(BaseModel):
     action_type: str  # hop | flag_causal | request_lab | backtrack | summarise_trail
     node_id: Optional[str] = None      # target for hop
     variant_id: Optional[str] = None   # target for flag_causal
@@ -46,7 +46,7 @@ class ClinDetectAction(BaseModel):
 
 # ── Observation ───────────────────────────────────────────────────────────────
 
-class ClinDetectObservation(BaseModel):
+class NaradaObservation(BaseModel):
     step: int
     max_steps: int
     task_type: str         # monogenic | oligogenic | phenotype_mismatch
@@ -64,7 +64,7 @@ class ClinDetectObservation(BaseModel):
 # ── Step result (server → client) ─────────────────────────────────────────────
 
 class StepResult(BaseModel):
-    observation: ClinDetectObservation
+    observation: NaradaObservation
     reward: float
     done: bool
     info: Dict[str, Any] = Field(default_factory=dict)
@@ -72,7 +72,7 @@ class StepResult(BaseModel):
 
 # ── State metadata ─────────────────────────────────────────────────────────────
 
-class ClinDetectState(BaseModel):
+class NaradaState(BaseModel):
     episode_id: str
     task_type: str
     case_id: str

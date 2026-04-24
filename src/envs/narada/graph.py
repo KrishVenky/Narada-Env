@@ -1,5 +1,5 @@
 """
-ClinDetect: Knowledge graph builder.
+Narada: Knowledge graph builder.
 
 Builds the navigation graph from:
   1. data/hp.obo            — HPO phenotype terms and hierarchy
@@ -222,9 +222,9 @@ def load_clinvar_variants(
 
 # ── Graph builder ─────────────────────────────────────────────────────────────
 
-class ClinDetectGraph:
+class NaradaGraph:
     """
-    In-memory knowledge graph for ClinDetect episodes.
+    In-memory knowledge graph for Narada episodes.
 
     nodes: dict[node_id → {id, type, name, description, metadata}]
     edges: dict[node_id → set(connected_node_ids)]
@@ -323,8 +323,6 @@ class ClinDetectGraph:
                 self._add_edge(gene_id, dis_id)
 
         # 3. HPO phenotype nodes + edges to diseases
-        # Only add HPO terms that appear in the disease catalog or have children/parents
-        # that connect to disease nodes
         self._add_hpo_nodes()
 
     def _add_hpo_nodes(self) -> None:
@@ -375,31 +373,26 @@ class ClinDetectGraph:
                     self._add_edge(hpo_id, parent_id)
 
         # Step 4: explicit catalog wiring — phenotype → disease node
-        # This is O(len(DISEASE_CATALOG) * avg_hpo_per_disease) ≈ O(100), not O(N*M)
         disease_name_index: Dict[str, str] = {}  # name_slug → node_id
         for nid, nd in self.nodes.items():
             if nd["type"] == "disease":
                 disease_name_index[nd["name"].lower()] = nid
 
         for entry in DISEASE_CATALOG:
-            # Find all disease nodes associated with this catalog entry's genes
             for gene in entry["genes"]:
                 gene_id = f"GENE:{gene}"
                 if gene_id not in self.nodes:
                     continue
-                # All disease nodes linked to this gene
                 gene_disease_nodes = [
                     nid for nid in self.edges.get(gene_id, set())
                     if self.nodes.get(nid, {}).get("type") == "disease"
                 ]
-                # Wire each catalog HPO term → all gene-associated disease nodes
                 for hpo_id in entry["hpo_ids"]:
                     if hpo_id in self.nodes:
                         for dis_nid in gene_disease_nodes:
                             self._add_edge(hpo_id, dis_nid)
 
         # Step 5: lightweight inverted-index matching for broader coverage
-        # Build word → disease_node_ids index (only once, O(M*W))
         word_to_diseases: Dict[str, List[str]] = defaultdict(list)
         for nid, nd in self.nodes.items():
             if nd["type"] != "disease":
@@ -408,7 +401,6 @@ class ClinDetectGraph:
             for w in words:
                 word_to_diseases[w].append(nid)
 
-        # For each catalog HPO term, look up matching disease nodes via the index
         for hpo_id in catalog_hpo_ids:
             if hpo_id not in self.nodes:
                 continue
@@ -497,14 +489,11 @@ class ClinDetectGraph:
             gene_id = f"GENE:{gene}"
             if gene_id in self.nodes:
                 relevant.add(gene_id)
-                # All variants of this gene
                 for v in self.gene_variants.get(gene, []):
                     relevant.add(f"VAR:{v['allele_id']}")
-                # All disease nodes linked to this gene
                 for nid in self.edges.get(gene_id, set()):
                     if self.nodes.get(nid, {}).get("type") == "disease":
                         relevant.add(nid)
-                # Pathway node
                 pathway = self.nodes[gene_id]["metadata"].get("pathway")
                 if pathway and pathway in self._pathway_nodes:
                     relevant.add(self._pathway_nodes[pathway])
@@ -512,7 +501,6 @@ class ClinDetectGraph:
         # Patient phenotype nodes and their ancestors (up to 3 levels)
         for hpo_id in patient_hpo_ids:
             relevant.add(hpo_id)
-            # Walk up HPO hierarchy
             queue = list(self.hpo_terms.get(hpo_id, {}).get("parents", []))
             for _ in range(3):
                 next_queue = []
@@ -804,12 +792,12 @@ def _slugify(text: str) -> str:
 
 
 # Module-level singleton — loaded once, reused across all episodes
-_GRAPH: Optional[ClinDetectGraph] = None
+_GRAPH: Optional[NaradaGraph] = None
 
 
-def get_graph() -> ClinDetectGraph:
+def get_graph() -> NaradaGraph:
     global _GRAPH
     if _GRAPH is None:
-        _GRAPH = ClinDetectGraph()
+        _GRAPH = NaradaGraph()
         _GRAPH.load()
     return _GRAPH

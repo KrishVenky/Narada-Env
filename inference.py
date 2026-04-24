@@ -1,5 +1,5 @@
 """
-ClinDetect: Inference Script (OpenEnv compliant)
+Narada: Inference Script (OpenEnv compliant)
 
 Required environment variables:
     API_BASE_URL   LLM API endpoint  (default: https://router.huggingface.co/v1)
@@ -7,12 +7,12 @@ Required environment variables:
     HF_TOKEN       API key — mandatory, no default
 
 Optional:
-    ENV_URL        ClinDetect space URL (default: https://krishvenky-clindetect-env.hf.space)
+    ENV_URL        Narada space URL (default: https://krishvenky-narada-env.hf.space)
     MAX_STEPS      Override per-episode step limit
     GROQ_BASE_URL  Use Groq for fast dev inference (https://api.groq.com/openai/v1)
 
 Output format (exact — validator parses these lines):
-    [START] task=<name> env=clindetect model=<model>
+    [START] task=<name> env=narada model=<model>
     [STEP]  step=N action=<str> reward=R done=false|true error=null|<msg>
     [END]   success=true|false steps=N score=0.XXX rewards=r1,r2,...
 """
@@ -35,7 +35,7 @@ from openai import OpenAI
 API_BASE_URL: str = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
 MODEL_NAME: str = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
 HF_TOKEN: Optional[str] = os.getenv("HF_TOKEN")
-ENV_URL: str = os.getenv("ENV_URL", "https://krishvenky-clindetect-env.hf.space")
+ENV_URL: str = os.getenv("ENV_URL", "https://krishvenky-narada-env.hf.space")
 MAX_STEPS_OVERRIDE: Optional[int] = int(os.getenv("MAX_STEPS", "0")) or None
 
 if HF_TOKEN is None:
@@ -47,8 +47,8 @@ _src = os.path.join(os.path.dirname(__file__), "src", "envs")
 if _src not in sys.path:
     sys.path.insert(0, _src)
 
-from clindetect.client import ClinDetectEnv
-from clindetect.models import ClinDetectAction, ClinDetectObservation, StepResult
+from narada.client import NaradaEnv
+from narada.models import NaradaAction, NaradaObservation, StepResult
 
 # ── OpenAI-compat client ──────────────────────────────────────────────────────
 
@@ -111,7 +111,7 @@ OUTPUT FORMAT (strict JSON):
 
 # ── Observation formatter ─────────────────────────────────────────────────────
 
-def format_observation(obs: ClinDetectObservation) -> str:
+def format_observation(obs: NaradaObservation) -> str:
     lines = [
         f"STEP {obs.step}/{obs.max_steps} | Task: {obs.task_type}",
         "",
@@ -151,13 +151,13 @@ def format_observation(obs: ClinDetectObservation) -> str:
 
 # ── Action parser ─────────────────────────────────────────────────────────────
 
-_FALLBACK_ACTION = ClinDetectAction(
+_FALLBACK_ACTION = NaradaAction(
     action_type="summarise_trail",
     reasoning="Fallback: gathering information.",
 )
 
 
-def parse_action(text: str) -> ClinDetectAction:
+def parse_action(text: str) -> NaradaAction:
     if not text:
         return _FALLBACK_ACTION
     match = re.search(r"\{.*\}", text, re.DOTALL)
@@ -168,7 +168,7 @@ def parse_action(text: str) -> ClinDetectAction:
         atype = str(data.get("action_type", "summarise_trail")).lower()
         if atype not in ("hop", "flag_causal", "backtrack", "request_lab", "summarise_trail"):
             atype = "summarise_trail"
-        return ClinDetectAction(
+        return NaradaAction(
             action_type=atype,
             node_id=str(data["node_id"]) if data.get("node_id") else None,
             variant_id=str(data["variant_id"]) if data.get("variant_id") else None,
@@ -179,7 +179,7 @@ def parse_action(text: str) -> ClinDetectAction:
         return _FALLBACK_ACTION
 
 
-def action_to_str(action: ClinDetectAction) -> str:
+def action_to_str(action: NaradaAction) -> str:
     if action.action_type == "hop" and action.node_id:
         return f"hop({action.node_id})"
     if action.action_type == "flag_causal" and action.variant_id:
@@ -197,10 +197,10 @@ async def run_episode(task_type: str) -> None:
     score = 0.5
     success = False
 
-    print(f"[START] task={task_type} env=clindetect model={MODEL_NAME}", flush=True)
+    print(f"[START] task={task_type} env=narada model={MODEL_NAME}", flush=True)
 
     try:
-        async with ClinDetectEnv(base_url=ENV_URL) as env:
+        async with NaradaEnv(base_url=ENV_URL) as env:
             result = await env.reset(task_type=task_type)
             obs = result.observation
 

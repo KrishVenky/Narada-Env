@@ -24,7 +24,7 @@ EXPOSE 7860
 HEALTHCHECK --interval=30s --timeout=15s --start-period=30s --retries=3 \
   CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:${PORT}/health')" || exit 1
 
-CMD uvicorn clindetect.server.app:app \
+CMD uvicorn narada.server.app:app \
     --host ${HOST} \
     --port ${PORT} \
     --workers ${WORKERS} \

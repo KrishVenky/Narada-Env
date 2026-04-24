@@ -1,17 +1,17 @@
 """
-ClinDetect: Python WebSocket client.
+Narada: Python WebSocket client.
 
-Import ClinDetectEnv in training code. Never import from server/.
+Import NaradaEnv in training code. Never import from server/.
 
 Usage (async):
-    async with ClinDetectEnv(base_url="https://...") as env:
+    async with NaradaEnv(base_url="https://...") as env:
         result = await env.reset(task_type="monogenic")
-        result = await env.step(ClinDetectAction(...))
+        result = await env.step(NaradaAction(...))
 
 Usage (sync):
-    with ClinDetectEnv(base_url="...").sync() as env:
+    with NaradaEnv(base_url="...").sync() as env:
         result = env.reset(task_type="monogenic")
-        result = env.step(ClinDetectAction(...))
+        result = env.step(NaradaAction(...))
 """
 
 from __future__ import annotations
@@ -24,15 +24,15 @@ from typing import Any, Dict, Optional
 import websockets
 from websockets.exceptions import ConnectionClosed
 
-from .models import ClinDetectAction, ClinDetectState, StepResult
+from .models import NaradaAction, NaradaState, StepResult
 
 logger = logging.getLogger(__name__)
 
 
-class ClinDetectEnv:
+class NaradaEnv:
     """Async WebSocket client. One instance = one persistent session."""
 
-    def __init__(self, base_url: str = "https://krishvenky-clindetect-env.hf.space") -> None:
+    def __init__(self, base_url: str = "https://krishvenky-narada-env.hf.space") -> None:
         self._base_url = base_url.rstrip("/")
         self._ws_url = (
             self._base_url
@@ -41,7 +41,7 @@ class ClinDetectEnv:
         ) + "/ws"
         self._ws: Optional[Any] = None
 
-    async def __aenter__(self) -> "ClinDetectEnv":
+    async def __aenter__(self) -> "NaradaEnv":
         await self._connect()
         return self
 
@@ -77,16 +77,16 @@ class ClinDetectEnv:
         response = await self._send_recv(msg)
         return self._parse_result(response)
 
-    async def step(self, action: ClinDetectAction) -> StepResult:
+    async def step(self, action: NaradaAction) -> StepResult:
         msg = {"type": "step", "action": action.model_dump()}
         response = await self._send_recv(msg)
         return self._parse_result(response)
 
-    async def state(self) -> ClinDetectState:
+    async def state(self) -> NaradaState:
         response = await self._send_recv({"type": "state"})
         if response.get("type") == "error":
             raise RuntimeError(response.get("message", "Server error"))
-        return ClinDetectState.model_validate(response["data"])
+        return NaradaState.model_validate(response["data"])
 
     async def _send_recv(self, msg: Dict[str, Any]) -> Dict[str, Any]:
         if self._ws is None:
@@ -108,18 +108,18 @@ class ClinDetectEnv:
             raise RuntimeError(response.get("message", "Server error"))
         return StepResult.model_validate(response["data"])
 
-    def sync(self) -> "SyncClinDetectEnv":
-        return SyncClinDetectEnv(self)
+    def sync(self) -> "SyncNaradaEnv":
+        return SyncNaradaEnv(self)
 
 
-class SyncClinDetectEnv:
+class SyncNaradaEnv:
     """Synchronous wrapper for use in non-async training loops."""
 
-    def __init__(self, async_env: ClinDetectEnv) -> None:
+    def __init__(self, async_env: NaradaEnv) -> None:
         self._env = async_env
         self._loop: Optional[asyncio.AbstractEventLoop] = None
 
-    def __enter__(self) -> "SyncClinDetectEnv":
+    def __enter__(self) -> "SyncNaradaEnv":
         self._loop = asyncio.new_event_loop()
         self._loop.run_until_complete(self._env._connect())
         return self
@@ -138,8 +138,8 @@ class SyncClinDetectEnv:
     def reset(self, task_type: str = "monogenic", seed: Optional[int] = None) -> StepResult:
         return self._run(self._env.reset(task_type=task_type, seed=seed))
 
-    def step(self, action: ClinDetectAction) -> StepResult:
+    def step(self, action: NaradaAction) -> StepResult:
         return self._run(self._env.step(action))
 
-    def state(self) -> ClinDetectState:
+    def state(self) -> NaradaState:
         return self._run(self._env.state())

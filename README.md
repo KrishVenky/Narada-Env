@@ -1,4 +1,4 @@
-# ClinDetect — Rare Disease Diagnosis RL Environment
+# Narada — Rare Disease Diagnosis RL Environment
 
 **Meta × PyTorch OpenEnv Hackathon × Scaler School of Technology — Grand Finale**
 
@@ -19,9 +19,9 @@ This is exactly where current LLMs fail: they follow pathogenicity scores, not c
 
 ---
 
-## What ClinDetect Is
+## What Narada Is
 
-A **reinforcement learning environment** where an LLM agent navigates a 74,000-node gene-disease knowledge graph built from real ClinVar and HPO data. The agent must diagnose a rare disease patient by reasoning through phenotype → disease → gene → variant chains.
+A **reinforcement learning environment** where an LLM agent navigates a 55,000-node gene-disease knowledge graph built from real ClinVar and HPO data. The agent must diagnose a rare disease patient by reasoning through phenotype → disease → gene → variant chains.
 
 **Three task tiers, increasing difficulty:**
 
@@ -53,8 +53,8 @@ Built at runtime from:
 - `data/clinvar_pathogenic.tsv` — 92,000 high-confidence pathogenic variants (GRCh38, criteria provided/expert panel, deduplicated)
 
 **Graph stats:**
-- 74,000+ nodes (phenotype, disease, gene, variant, pathway)
-- 1.4M+ edge pairs
+- 55,000+ nodes (phenotype, disease, gene, variant, pathway)
+- 70,000+ edge pairs
 - 3,268 genes represented
 
 ---
@@ -83,7 +83,7 @@ python scripts/filter_clinvar.py
 pip install -r requirements.txt
 
 # 3. Start server
-PYTHONPATH=src/envs uvicorn clindetect.server.app:app --port 7860
+PYTHONPATH=src/envs uvicorn narada.server.app:app --port 7860
 
 # 4. Open browser → http://localhost:7860
 ```
@@ -93,7 +93,7 @@ PYTHONPATH=src/envs uvicorn clindetect.server.app:app --port 7860
 ## OpenEnv Validation
 
 ```bash
-openenv validate https://krishvenky-clindetect-env.hf.space
+openenv validate https://krishvenky-narada-env.hf.space
 ```
 
 All scores strictly in `(0.01, 0.99)`. `[END]` line always includes `score=` field.
@@ -102,7 +102,7 @@ All scores strictly in `(0.01, 0.99)`. `[END]` line always includes `score=` fie
 
 ## Training
 
-Training notebook: `training/clindetect_grpo.ipynb` (Colab, Unsloth + HF TRL GRPO)
+Training notebook: `training/narada_grpo.ipynb` (Colab, Unsloth + HF TRL GRPO)
 
 Base model: `Qwen/Qwen3-1.7B`
 

@@ -1,7 +1,7 @@
-name: clindetect
+name: narada
 version: "1.0.0"
 description: >
-  ClinDetect: LLM agent navigates a 150,000-node gene-disease knowledge graph
+  Narada: LLM agent navigates a 55,000-node gene-disease knowledge graph
   (ClinVar + HPO) to diagnose rare disease patients. The agent must cross-reference
   patient phenotypes against candidate variants, follow causal chains across the
   graph, and resist high-pathogenicity decoy variants unrelated to the patient's
@@ -20,10 +20,10 @@ tags:
   - llm-agent
   - multi-agent
   - self-improvement
-python_package: src/envs/clindetect
-entry_point: clindetect.server.app:app
+python_package: src/envs/narada
+entry_point: narada.server.app:app
 hardware: cpu-basic
-space_url: "https://krishvenky-clindetect-env.hf.space"
+space_url: "https://krishvenky-narada-env.hf.space"
 env:
   PORT: "7860"
   HOST: "0.0.0.0"

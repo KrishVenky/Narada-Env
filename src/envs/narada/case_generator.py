@@ -1,5 +1,5 @@
 """
-ClinDetect: Patient case generator.
+Narada: Patient case generator.
 
 Builds episode cases from the knowledge graph + disease catalog.
 Each case is a dict matching PatientCase structure.
@@ -20,7 +20,7 @@ from .graph import (
     DISEASE_CATALOG,
     GENE_TO_DISEASES,
     PATHWAY_MAP,
-    ClinDetectGraph,
+    NaradaGraph,
     _clinsig_to_score,
     _slugify,
 )
@@ -44,7 +44,7 @@ def _is_high_impact(v: Dict[str, Any]) -> bool:
 
 
 def _pick_variants(
-    graph: ClinDetectGraph,
+    graph: NaradaGraph,
     genes: List[str],
     n: int,
     prefer_high_impact: bool = False,
@@ -62,7 +62,7 @@ def _pick_variants(
     return rng.sample(pool, n)
 
 
-def _variant_to_model(v: Dict[str, Any], graph: ClinDetectGraph) -> Variant:
+def _variant_to_model(v: Dict[str, Any], graph: NaradaGraph) -> Variant:
     var_id = graph.variant_node_id(v["allele_id"])
     return Variant(
         id=var_id,
@@ -76,7 +76,7 @@ def _variant_to_model(v: Dict[str, Any], graph: ClinDetectGraph) -> Variant:
     )
 
 
-def _dict_to_graph_node(graph: ClinDetectGraph, node_id: str) -> GraphNode:
+def _dict_to_graph_node(graph: NaradaGraph, node_id: str) -> GraphNode:
     nd = graph.get_node(node_id)
     if nd is None:
         return GraphNode(
@@ -137,7 +137,7 @@ class PatientCase:
 
 def _pick_hpo_subset(
     hpo_ids: List[str],
-    graph: ClinDetectGraph,
+    graph: NaradaGraph,
     n: int,
     rng: random.Random,
 ) -> Tuple[List[str], List[str]]:
@@ -151,7 +151,7 @@ def _pick_hpo_subset(
 
 
 def _find_starting_node(
-    graph: ClinDetectGraph,
+    graph: NaradaGraph,
     hpo_ids: List[str],
     rng: random.Random,
 ) -> str:
@@ -165,7 +165,7 @@ def _find_starting_node(
 
 
 def generate_monogenic_case(
-    graph: ClinDetectGraph,
+    graph: NaradaGraph,
     rng: Optional[random.Random] = None,
 ) -> PatientCase:
     """Single causal gene, 3-4 phenotypes, 5-8 candidate variants."""
@@ -194,7 +194,6 @@ def generate_monogenic_case(
     hpo_ids, hpo_names = _pick_hpo_subset(disease["hpo_ids"], graph, n_pheno, rng)
 
     # Candidate variants: causal + 3-6 distractors from same-pathway genes
-    # Use PATHWAY_MAP for broad matching, not GENE_TO_DISEASES (too narrow)
     target_pathway = disease["pathway"]
     distractor_genes = [
         g for g in graph.gene_variants.keys()
@@ -204,7 +203,6 @@ def generate_monogenic_case(
             or any(target_pathway == d["pathway"] for d in GENE_TO_DISEASES.get(g, []))
         )
     ]
-    # If no same-pathway distractors, fall back to any gene with variants
     if len(distractor_genes) < 3:
         distractor_genes = [g for g in graph.gene_variants.keys() if g != causal_gene]
     n_distractors = rng.randint(3, 6)
@@ -236,7 +234,7 @@ def generate_monogenic_case(
 
 
 def generate_oligogenic_case(
-    graph: ClinDetectGraph,
+    graph: NaradaGraph,
     rng: Optional[random.Random] = None,
 ) -> PatientCase:
     """2-3 causal genes, 5-7 phenotypes, 10-15 candidates."""
@@ -255,7 +253,6 @@ def generate_oligogenic_case(
             break
 
     if len(causal_genes) < 2:
-        # Fallback to whatever we have
         causal_genes = [g for g in disease["genes"] if graph.get_variants_for_gene(g)][:2]
     if not causal_genes:
         raise RuntimeError(f"No variants for genes in {disease['disease']}")
@@ -314,7 +311,7 @@ def generate_oligogenic_case(
 
 
 def generate_mismatch_case(
-    graph: ClinDetectGraph,
+    graph: NaradaGraph,
     rng: Optional[random.Random] = None,
 ) -> PatientCase:
     """
@@ -409,7 +406,7 @@ MAX_STEPS = {
 
 
 def generate_case(
-    graph: ClinDetectGraph,
+    graph: NaradaGraph,
     task_type: str,
     seed: Optional[int] = None,
 ) -> PatientCase:

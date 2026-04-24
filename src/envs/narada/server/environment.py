@@ -1,5 +1,5 @@
 """
-ClinDetect: Core environment logic (one instance per WebSocket session).
+Narada: Core environment logic (one instance per WebSocket session).
 
 All state is per-instance. Never shared between sessions.
 Graph is a module-level singleton loaded once at startup.
@@ -13,11 +13,11 @@ import uuid
 from typing import Any, Dict, List, Optional, Set
 
 from ..case_generator import MAX_STEPS, PatientCase, generate_case
-from ..graph import ClinDetectGraph, get_graph
+from ..graph import NaradaGraph, get_graph
 from ..models import (
-    ClinDetectAction,
-    ClinDetectObservation,
-    ClinDetectState,
+    NaradaAction,
+    NaradaObservation,
+    NaradaState,
     GraphNode,
     StepResult,
     Variant,
@@ -53,14 +53,14 @@ OVERSEER_MIN = 0.0
 OVERSEER_MAX = 0.3
 
 
-class ClinDetectEnvironment:
+class NaradaEnvironment:
     """
     Stateful environment for one WebSocket session.
     reset() → step()* → (done)
     """
 
     def __init__(self) -> None:
-        self._graph: ClinDetectGraph = get_graph()
+        self._graph: NaradaGraph = get_graph()
         self._episode_id: str = ""
         self._case: Optional[PatientCase] = None
         self._step: int = 0
@@ -115,7 +115,7 @@ class ClinDetectEnvironment:
         obs = self._build_observation(step_reward=0.0)
         return StepResult(observation=obs, reward=0.0, done=False, info={"episode_id": self._episode_id})
 
-    def step(self, action: ClinDetectAction) -> StepResult:
+    def step(self, action: NaradaAction) -> StepResult:
         if self._done:
             raise RuntimeError("Episode is done. Call reset() first.")
         if self._case is None:
@@ -162,8 +162,8 @@ class ClinDetectEnvironment:
             },
         )
 
-    def state(self) -> ClinDetectState:
-        return ClinDetectState(
+    def state(self) -> NaradaState:
+        return NaradaState(
             episode_id=self._episode_id,
             task_type=self._case.task_type if self._case else "unknown",
             case_id=self._case.case_id if self._case else "",
@@ -178,7 +178,7 @@ class ClinDetectEnvironment:
     # ── Action dispatch ───────────────────────────────────────────────────────
 
     def _dispatch_action(
-        self, action: ClinDetectAction
+        self, action: NaradaAction
     ) -> tuple[float, float, bool]:
         """Returns (step_reward, terminal_reward, is_terminal)."""
         atype = action.action_type.lower()
@@ -331,7 +331,7 @@ class ClinDetectEnvironment:
 
     # ── Observation builder ───────────────────────────────────────────────────
 
-    def _build_observation(self, step_reward: float) -> ClinDetectObservation:
+    def _build_observation(self, step_reward: float) -> NaradaObservation:
         case = self._case
         graph = self._graph
 
@@ -346,7 +346,7 @@ class ClinDetectEnvironment:
         if self._done:
             info["ground_truth_hint"] = case.causal_genes  # revealed post-episode
 
-        return ClinDetectObservation(
+        return NaradaObservation(
             step=self._step,
             max_steps=self._max_steps,
             task_type=case.task_type,
