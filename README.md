@@ -110,6 +110,24 @@ All scores strictly in `(0.01, 0.99)`. `[END]` line always includes `score=` fie
 
 ---
 
+## Baseline Benchmark
+
+Model: `llama-3.3-70b-versatile` via Groq (zero-shot, no fine-tuning). Two single-episode samples show the core problem: zero-shot LLMs are **inconsistent** and frequently collapse into `summarise_trail` loops instead of navigating the graph.
+
+| Task | Run 1 Score | Run 2 Score | Notes |
+|---|---|---|---|
+| `monogenic` | **0.990** | 0.433 | Run 1: solved in 4 steps. Run 2: hit summarise_trail loop after step 3 |
+| `oligogenic` | 0.500 | 0.240 | Run 1: WS disconnect mid-episode. Run 2: full summarise_trail timeout |
+| `phenotype_mismatch` | 0.060 | 0.225 | Run 1: looped on wrong gene 9× before giving up. Run 2: pure timeout |
+
+The inconsistency (0.990 vs 0.433 on the same task) is the core motivation for GRPO training: the agent occasionally finds the right path but cannot do so reliably. Fine-tuning on the graph-navigation reward signal is intended to make correct phenotype → gene → variant chaining the default behavior, not the lucky outcome.
+
+**Target post-GRPO (Qwen3-1.7B):** consistent flag accuracy > 50% on monogenic, causal path coverage > 60%.
+
+> To switch backends: set `GROQ_API_KEY` for Groq, or `HF_TOKEN` for HF Inference Router. The script auto-detects which to use.
+
+---
+
 ## Training
 
 Training notebook: `training/narada_grpo.ipynb` (Colab, Unsloth + HF TRL GRPO)

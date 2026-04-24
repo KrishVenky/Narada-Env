@@ -52,8 +52,8 @@ class NaradaEnv:
         logger.info("Connecting to %s", self._ws_url)
         self._ws = await websockets.connect(
             self._ws_url,
-            ping_interval=20,
-            ping_timeout=60,
+            ping_interval=15,
+            ping_timeout=45,
             open_timeout=30,
         )
         logger.info("Connected")
@@ -91,16 +91,9 @@ class NaradaEnv:
     async def _send_recv(self, msg: Dict[str, Any]) -> Dict[str, Any]:
         if self._ws is None:
             await self._connect()
-        try:
-            await self._ws.send(json.dumps(msg))
-            raw = await self._ws.recv()
-            return json.loads(raw)
-        except ConnectionClosed as e:
-            logger.warning("WS closed (%s), reconnecting...", e)
-            await self._connect()
-            await self._ws.send(json.dumps(msg))
-            raw = await self._ws.recv()
-            return json.loads(raw)
+        await self._ws.send(json.dumps(msg))
+        raw = await self._ws.recv()
+        return json.loads(raw)
 
     @staticmethod
     def _parse_result(response: Dict[str, Any]) -> StepResult:

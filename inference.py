@@ -1,15 +1,16 @@
 """
 Narada: Inference Script (OpenEnv compliant)
 
-Required environment variables:
-    API_BASE_URL   LLM API endpoint  (default: https://router.huggingface.co/v1)
-    MODEL_NAME     Model identifier  (default: Qwen/Qwen2.5-72B-Instruct)
-    HF_TOKEN       API key — mandatory, no default
+Backend selection (auto-detected, first match wins):
+    GROQ_API_KEY   → Groq endpoint, default model: llama-3.3-70b-versatile
+    HF_TOKEN       → HF Inference Router, default model: Qwen/Qwen2.5-72B-Instruct
 
-Optional:
+Override any of these:
+    API_BASE_URL   LLM API endpoint
+    MODEL_NAME     Model identifier
+    API_KEY        API key (overrides backend-specific key)
     ENV_URL        Narada space URL (default: https://krishvenky-narada-env.hf.space)
     MAX_STEPS      Override per-episode step limit
-    GROQ_BASE_URL  Use Groq for fast dev inference (https://api.groq.com/openai/v1)
 
 Output format (exact — validator parses these lines):
     [START] task=<name> env=narada model=<model>
@@ -29,17 +30,40 @@ import textwrap
 from typing import Any, Dict, List, Optional
 
 from openai import OpenAI
+from websockets.exceptions import ConnectionClosed
 
-# ── Environment variables ─────────────────────────────────────────────────────
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
-API_BASE_URL: str = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
-MODEL_NAME: str = os.getenv("MODEL_NAME", "Qwen/Qwen2.5-72B-Instruct")
-HF_TOKEN: Optional[str] = os.getenv("HF_TOKEN")
+# ── Backend auto-detection ────────────────────────────────────────────────────
+# Priority: explicit API_KEY > GROQ_API_KEY > HF_TOKEN
+
+_groq_key: Optional[str] = os.getenv("GROQ_API_KEY")
+_hf_token: Optional[str] = os.getenv("HF_TOKEN")
+_explicit_key: Optional[str] = os.getenv("API_KEY")
+
+if _explicit_key:
+    _api_key = _explicit_key
+    _default_base = os.getenv("API_BASE_URL", "https://router.huggingface.co/v1")
+    _default_model = "Qwen/Qwen2.5-72B-Instruct"
+elif _groq_key:
+    _api_key = _groq_key
+    _default_base = "https://api.groq.com/openai/v1"
+    _default_model = "llama-3.3-70b-versatile"
+elif _hf_token:
+    _api_key = _hf_token
+    _default_base = "https://router.huggingface.co/v1"
+    _default_model = "Qwen/Qwen2.5-72B-Instruct"
+else:
+    raise ValueError("Set GROQ_API_KEY or HF_TOKEN (or API_KEY) in environment or .env file")
+
+API_BASE_URL: str = os.getenv("API_BASE_URL", _default_base)
+MODEL_NAME: str = os.getenv("MODEL_NAME", _default_model)
 ENV_URL: str = os.getenv("ENV_URL", "https://krishvenky-narada-env.hf.space")
 MAX_STEPS_OVERRIDE: Optional[int] = int(os.getenv("MAX_STEPS", "0")) or None
-
-if HF_TOKEN is None:
-    raise ValueError("HF_TOKEN environment variable is required")
 
 # ── Inject src path so imports work when running from repo root ──────────────
 
@@ -52,7 +76,7 @@ from narada.models import NaradaAction, NaradaObservation, StepResult
 
 # ── OpenAI-compat client ──────────────────────────────────────────────────────
 
-client = OpenAI(base_url=API_BASE_URL, api_key=HF_TOKEN)
+client = OpenAI(base_url=API_BASE_URL, api_key=_api_key)
 
 TEMPERATURE: float = 0.2
 MAX_TOKENS: int = 800
@@ -237,6 +261,15 @@ async def run_episode(task_type: str) -> None:
                     result = await asyncio.wait_for(env.step(action), timeout=30.0)
                 except asyncio.TimeoutError:
                     error_str = "timeout"
+                    step_rewards.append(0.01)
+                    print(
+                        f"[STEP] step={steps_taken} action={action_to_str(action)} "
+                        f"reward=0.01 done=false error={error_str}",
+                        flush=True,
+                    )
+                    break
+                except ConnectionClosed as e:
+                    error_str = f"ws_closed:{e.code}"
                     step_rewards.append(0.01)
                     print(
                         f"[STEP] step={steps_taken} action={action_to_str(action)} "
