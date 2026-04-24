@@ -1,0 +1,89 @@
+name: clindetect
+version: "1.0.0"
+description: >
+  ClinDetect: LLM agent navigates a 150,000-node gene-disease knowledge graph
+  (ClinVar + HPO) to diagnose rare disease patients. The agent must cross-reference
+  patient phenotypes against candidate variants, follow causal chains across the
+  graph, and resist high-pathogenicity decoy variants unrelated to the patient's
+  phenotype. Self-improving via adversarial case generation targeting agent failure
+  patterns. Three task tiers: monogenic (easy), oligogenic (medium),
+  phenotype_mismatch (hard).
+author: KrishVenky
+license: MIT
+sdk: docker
+tags:
+  - openenv
+  - rare-disease
+  - genomics
+  - graph-navigation
+  - rl
+  - llm-agent
+  - multi-agent
+  - self-improvement
+python_package: src/envs/clindetect
+entry_point: clindetect.server.app:app
+hardware: cpu-basic
+space_url: "https://krishvenky-clindetect-env.hf.space"
+env:
+  PORT: "7860"
+  HOST: "0.0.0.0"
+  WORKERS: "1"
+tasks:
+  - id: monogenic
+    difficulty: easy
+    max_steps: 15
+    description: >
+      Single causal pathogenic variant. 3-4 HPO phenotype terms. Graph path
+      is 4-8 hops. Minimal distractors. Tests basic directional reasoning:
+      follow phenotype → disease → gene → variant chain.
+    grader: correct_flag * timing_bonus + overseer_score
+    reward_range: [0.01, 0.99]
+  - id: oligogenic
+    difficulty: medium
+    max_steps: 25
+    description: >
+      2-3 contributing variants across different genes. 5-7 phenotype terms
+      spanning two organ systems. Agent must find all variants within the step
+      budget. Tests multi-objective tracking across long trajectories and
+      holding multiple simultaneous hypotheses.
+    grader: partial_credit_per_variant + timing_bonus + overseer_score
+    reward_range: [0.01, 0.99]
+  - id: phenotype_mismatch
+    difficulty: hard
+    max_steps: 20
+    description: >
+      A high-pathogenicity BRCA1/BRCA2/TP53 frameshift variant is in the
+      candidate pool as a deliberate decoy. The patient's phenotypes are
+      entirely cardiac or neurological. The actual causal variant is a
+      lower-pathogenicity gene specific to the presenting phenotype.
+      Tests causal discipline: resist the highest-salience signal when it
+      is phenotypically irrelevant. Most untrained LLMs fail this task.
+    grader: cardiac_flag * 1.0 - decoy_flag * 0.5 + overseer_score
+    reward_range: [0.01, 0.99]
+observation_space:
+  type: object
+  fields:
+    step: integer
+    max_steps: integer
+    task_type: string
+    current_node: GraphNode
+    trail: list[GraphNode]
+    patient_phenotypes: list[string]
+    phenotype_names: list[string]
+    candidate_variants: list[Variant]
+    step_reward: float
+    cumulative_reward: float
+    done: boolean
+    info: object
+action_space:
+  type: object
+  fields:
+    action_type: string
+    node_id: string
+    variant_id: string
+    test_type: string
+    reasoning: string
+  constraints:
+    - "action_type in [hop, flag_causal, backtrack, request_lab, summarise_trail]"
+    - "node_id required when action_type=hop"
+    - "variant_id required when action_type=flag_causal"

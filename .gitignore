@@ -1,0 +1,19 @@
+# Raw ClinVar download — 3.9GB, never commit
+data/variant_summary.txt
+data/variant_summary.txt.gz
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+dist/
+build/
+
+# IDE
+.vscode/settings.json
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

@@ -1,0 +1,2 @@
+data/clinvar_pathogenic.tsv filter=lfs diff=lfs merge=lfs -text
+data/hp.obo filter=lfs diff=lfs merge=lfs -text
