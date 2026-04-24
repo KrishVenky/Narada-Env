@@ -1,3 +1,13 @@
+---
+title: Narada Env
+emoji: 🧬
+colorFrom: blue
+colorTo: green
+sdk: docker
+app_port: 7860
+pinned: false
+---
+
 # Narada — Rare Disease Diagnosis RL Environment
 
 **Meta × PyTorch OpenEnv Hackathon × Scaler School of Technology — Grand Finale**
