@@ -86,17 +86,55 @@ All scores are clamped to `(0.01, 0.99)`.
 ## Running Locally
 
 ```bash
-# 1. Generate filtered ClinVar (one-time, ~3 min)
-python scripts/filter_clinvar.py
+# 1. Clone
+git clone https://github.com/KrishVenky/Narada-Env.git
+cd Narada-Env
 
-# 2. Install
+# 2. Create virtualenv (Python 3.10+)
+python -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
+
+# 3. Install
 pip install -r requirements.txt
 
-# 3. Start server
+# 4. Set up environment variables
+cp .env.example .env
+# Edit .env and fill in your API keys
+
+# 5. Generate filtered ClinVar (one-time, ~3 min)
+python scripts/filter_clinvar.py
+
+# 6. Start server
 PYTHONPATH=src/envs uvicorn narada.server.app:app --port 7860
 
-# 4. Open browser → http://localhost:7860
+# 7. Open browser → http://localhost:7860
 ```
+
+---
+
+## Contributing
+
+Pull requests welcome. To add a new task tier, reward component, or agent variant:
+
+1. Fork the repo and create a branch off `main`
+2. Environment logic lives in [src/envs/narada/](src/envs/narada/) — `environment.py` for reward design, `case_generator.py` for case sampling, `graph.py` for the knowledge graph
+3. Add your changes and run the OpenEnv validator before opening a PR:
+   ```bash
+   openenv validate http://localhost:7860
+   ```
+4. Update `ARCHITECTURE.md` if you change reward values, node types, or the session protocol
+
+**Key files:**
+
+| File | Purpose |
+|---|---|
+| `src/envs/narada/environment.py` | Core RL loop, reward computation |
+| `src/envs/narada/graph.py` | Knowledge graph build + singleton |
+| `src/envs/narada/case_generator.py` | Patient case generation per tier |
+| `src/envs/narada/models.py` | Pydantic schemas (action/observation/state) |
+| `src/envs/narada/client.py` | Python WebSocket client for agents |
+| `training/narada_grpo.ipynb` | GRPO training notebook (Colab) |
+| `inference.py` | Benchmark script (Groq or HF backend) |
 
 ---
 
