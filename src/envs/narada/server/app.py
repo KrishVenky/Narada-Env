@@ -14,11 +14,11 @@ from contextlib import asynccontextmanager
 from typing import Any, Dict, Optional
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse, JSONResponse
 
 from ..graph import get_graph
-from ..models import NaradaAction, NaradaState, StepResult
+from ..models import NaradaAction, NaradaObservation, NaradaState, StepResult
 from .environment import NaradaEnvironment
 
 logging.basicConfig(level=logging.INFO)
@@ -54,6 +54,57 @@ app = FastAPI(
 @app.get("/health")
 async def health() -> Dict[str, str]:
     return {"status": "healthy", "version": "1.0.0", "environment": "narada"}
+
+
+# ── OpenEnv standard endpoints ────────────────────────────────────────────────
+
+@app.get("/metadata")
+async def metadata() -> Dict[str, Any]:
+    return {
+        "name": "narada",
+        "version": "1.0.0",
+        "description": (
+            "LLM agent navigates a 55,000-node gene-disease knowledge graph "
+            "(ClinVar + HPO) to diagnose rare disease patients. Three task tiers: "
+            "monogenic (easy), oligogenic (medium), phenotype_mismatch (hard)."
+        ),
+        "tasks": ["monogenic", "oligogenic", "phenotype_mismatch"],
+        "reward_range": [0.01, 0.99],
+    }
+
+
+@app.get("/schema")
+async def schema() -> Dict[str, Any]:
+    return {
+        "action": NaradaAction.model_json_schema(),
+        "observation": NaradaObservation.model_json_schema(),
+        "state": NaradaState.model_json_schema(),
+    }
+
+
+@app.post("/mcp")
+async def mcp(request: Request) -> JSONResponse:
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    method = body.get("method", "")
+    req_id = body.get("id", 1)
+
+    if method == "tools/list":
+        result = {
+            "tools": [
+                {"name": "reset", "description": "Reset the environment and start a new episode"},
+                {"name": "step", "description": "Take an action in the environment"},
+                {"name": "state", "description": "Get current episode state"},
+            ]
+        }
+    elif method == "tools/call":
+        result = {"content": [{"type": "text", "text": "Use /reset, /step, /state HTTP endpoints"}]}
+    else:
+        result = {"name": "narada", "version": "1.0.0"}
+
+    return JSONResponse({"jsonrpc": "2.0", "result": result, "id": req_id})
 
 
 # ── WebSocket (primary transport) ─────────────────────────────────────────────
@@ -323,12 +374,16 @@ async def web_ui() -> HTMLResponse:
     return HTMLResponse(content=_WEB_UI)
 
 
-def run() -> None:
+def main() -> None:
     port = int(os.environ.get("PORT", 7860))
     host = os.environ.get("HOST", "0.0.0.0")
     workers = int(os.environ.get("WORKERS", 1))
     uvicorn.run("narada.server.app:app", host=host, port=port, workers=workers)
 
 
+# Keep run() as an alias so existing callers still work
+run = main
+
+
 if __name__ == "__main__":
-    run()
+    main()
