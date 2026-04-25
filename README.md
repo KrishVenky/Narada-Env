@@ -164,16 +164,16 @@ Zero-shot evaluation via `inference.py` (Groq backend, no fine-tuning). Two sing
 | `oligogenic` | 0.500 | 0.240 | Run 1: WS disconnect mid-episode. Run 2: full summarise_trail timeout |
 | `phenotype_mismatch` | 0.060 | 0.225 | Run 1: looped on wrong gene 9× before giving up. Run 2: pure timeout |
 
-### Multi-model comparison (zero-shot, monogenic task, seed=42)
+### Multi-model comparison (zero-shot, all 3 tasks, single run each)
 
-| Model | Score | Steps | Behavior |
-|---|---|---|---|
-| `llama-3.3-70b-versatile` | 0.990 | 4 | Correct flag in 4 hops |
-| `llama-3.1-8b-instant` | 0.433 | 15 | summarise_trail loop |
-| `mixtral-8x7b-32768` | 0.433 | 15 | summarise_trail loop |
-| `gemma2-9b-it` | 0.433 | 15 | summarise_trail loop |
+| Model | monogenic | oligogenic | phenotype_mismatch | Behavior |
+|---|---|---|---|---|
+| `llama-3.3-70b-versatile` | **0.990** | 0.500 | 0.060 | Hops graph; inconsistent |
+| `llama-3.1-8b-instant` | 0.310 | 0.425 | 0.310 | Hops but flags wrong variant |
+| `mixtral-8x7b-32768` | 0.233 | 0.220 | 0.225 | Full summarise_trail timeout |
+| `gemma2-9b-it` | 0.233 | 0.220 | 0.225 | Full summarise_trail timeout |
 
-The variance across model sizes (0.990 vs 0.433) is the core motivation for GRPO training: larger models occasionally find the right path but cannot do so reliably, and smaller models collapse to the `summarise_trail` fallback immediately. Fine-tuning on the graph-navigation reward signal is intended to make correct phenotype → gene → variant chaining the default behavior, not the lucky outcome.
+The pattern is clear: large frontier models (llama-3.3-70b) occasionally navigate the graph correctly but are inconsistent (0.990 vs 0.433 on the same task across runs). Mid-size models (llama-3.1-8b) attempt navigation but misfire on the final flag. Smaller models (mixtral, gemma2) collapse entirely to the `summarise_trail` loop and never issue a `flag_causal`. Fine-tuning on the graph-navigation reward signal is intended to make correct phenotype → gene → variant chaining the default, not a lucky outcome that only large models achieve occasionally.
 
 **Target post-GRPO (Qwen3-1.7B):** consistent flag accuracy > 50% on monogenic, causal path coverage > 60%.
 
