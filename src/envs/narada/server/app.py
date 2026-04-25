@@ -57,6 +57,39 @@ async def health() -> Dict[str, str]:
     return {"status": "healthy", "version": "1.0.0", "environment": "narada"}
 
 
+@app.get("/graph/subgraph")
+async def subgraph(node_id: str, depth: int = 2, max_nodes: int = 60) -> Dict[str, Any]:
+    """Return a JSON subgraph centred on node_id for D3.js force-graph rendering."""
+    graph = get_graph()
+    visited: dict = {}
+    queue = [(node_id, 0)]
+    while queue and len(visited) < max_nodes:
+        nid, d = queue.pop(0)
+        if nid in visited or d > depth:
+            continue
+        nd = graph.get_node(nid)
+        if nd is None:
+            continue
+        visited[nid] = nd
+        if d < depth:
+            for nb in graph.get_neighbors(nid)[:12]:
+                if nb not in visited:
+                    queue.append((nb, d + 1))
+
+    nodes = [
+        {"id": nid, "label": nd.get("name", nid)[:30], "type": nd.get("type", "unknown")}
+        for nid, nd in visited.items()
+    ]
+    node_set = {n["id"] for n in nodes}
+    links = [
+        {"source": nid, "target": nb}
+        for nid in visited
+        for nb in graph.get_neighbors(nid)
+        if nb in node_set and nb != nid
+    ]
+    return {"nodes": nodes, "links": links, "center": node_id}
+
+
 # ── OpenEnv standard endpoints ────────────────────────────────────────────────
 
 @app.get("/metadata")

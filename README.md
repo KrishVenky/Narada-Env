@@ -188,6 +188,63 @@ The pattern is clear: large frontier models (llama-3.3-70b) occasionally navigat
 
 Training notebook: `training/narada_grpo.ipynb` (Colab, Unsloth + HF TRL GRPO)
 
-Base model: `Qwen/Qwen3-1.7B`
+Base model: `Qwen/Qwen3-1.7B` — fits on a free T4 (4-bit quantised, 17.4M trainable LoRA params)
 
-Tasks trained in curriculum order: monogenic → oligogenic → phenotype_mismatch
+Tasks trained in curriculum order: `monogenic → oligogenic → phenotype_mismatch`
+
+### Architecture
+
+**Multi-step outcome GRPO** — the model generates a complete 3–5 action *diagnostic plan* per prompt. The full plan is executed in the environment and the terminal reward (correct flag / wrong flag / timeout) becomes the training signal. This gives 10× more reward variance than single-step GRPO:
+
+| Approach | Typical reward range | reward_std | Learning |
+|---|---|---|---|
+| 1-step (old) | 0.47–0.56 | ~0.03 | Slow |
+| Multi-step plan | 0.28–0.99 | ~0.20–0.35 | Strong |
+
+**Async-parallel reward** — all G=8 completions are evaluated concurrently via `asyncio.gather`. Each completion's plan runs as an independent WebSocket session. Total overhead ≈ one episode round-trip, not 8×.
+
+**Curriculum learning** — monogenic cases establish the basic hop→flag behaviour before oligogenic (multi-objective) and phenotype_mismatch (decoy resistance) add harder constraints.
+
+**Milestone reward** — environment gives a +0.10 bonus the first time the agent visits the actual causal gene node. Creates a two-stage reward landscape: find the gene (+0.10) → flag the variant (+1.0).
+
+### Key training config
+
+| Param | Value | Why |
+|---|---|---|
+| `num_generations` | 8 | More completions per prompt → higher reward_std |
+| `temperature` | 1.1 | Forces diverse hop targets within a group |
+| `max_completion_length` | 800 | Fits 4–5 JSON action blocks |
+| `N_SEEDS_PER_TASK` | 40 | 120 total prompts (was 60) — more case diversity |
+| `LR` | 5e-6 | Conservative to avoid catastrophic forgetting on 1.7B |
+
+---
+
+## Multi-Model Benchmark
+
+Run zero-shot comparison across sub-5B models (all runnable on T4):
+
+```bash
+HF_TOKEN=hf_... python benchmark.py --n_seeds 3
+```
+
+Models compared: Qwen3-0.6B, Qwen3-1.7B, Qwen3-4B, Llama-3.2-3B, Phi-3.5-mini
+
+Results are saved to `benchmark_results.json` after each run.
+
+---
+
+## Graph Export (Neo4j)
+
+Export the 55K-node knowledge graph to Cypher for Neo4j Aura (free tier) or Desktop:
+
+```bash
+PYTHONPATH=src/envs python scripts/export_neo4j.py
+# Generates neo4j_nodes.cypher + neo4j_rels.cypher
+# Import into Neo4j Browser, then:
+# MATCH (n:NaradaNode) RETURN n LIMIT 100
+```
+
+The live environment also exposes a subgraph JSON endpoint for D3.js visualization:
+```
+GET /graph/subgraph?node_id=GENE:BRCA2&depth=2
+```

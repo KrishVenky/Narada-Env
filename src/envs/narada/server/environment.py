@@ -57,6 +57,7 @@ R_TERMINAL_CORRECT = 1.0
 R_TERMINAL_PARTIAL = 0.5      # non-terminal bonus per correct oligogenic flag
 R_TERMINAL_WRONG = -0.5
 R_TIMING_BONUS = 0.2          # correct flag before the tier's early-step cutoff
+R_CAUSAL_GENE_MILESTONE = 0.10  # first-time visit to the actual causal gene node
 
 OVERSEER_MIN = 0.0
 OVERSEER_MAX = 0.3
@@ -240,14 +241,22 @@ class NaradaEnvironment:
                 self._hallucinated_hops += 1
             return R_IRRELEVANT_HOP - 0.05
 
+        is_new_visit = target_node_id not in self._trail_set
         self._current_node_id = target_node_id
-        if target_node_id not in self._trail_set:
+        if is_new_visit:
             self._trail.append(target_node_id)
             self._trail_set.add(target_node_id)
 
-        # Relevance reward
+        # Milestone: one-time bonus for first visit to the actual causal gene node.
+        # Gives the model an intermediate signal partway through phenotype→gene→variant.
+        milestone = 0.0
+        if is_new_visit and any(
+            target_node_id == f"GENE:{g}" for g in self._case.causal_genes
+        ):
+            milestone = R_CAUSAL_GENE_MILESTONE
+
         is_relevant = target_node_id in self._case.relevant_node_ids
-        return R_RELEVANT_HOP if is_relevant else R_IRRELEVANT_HOP
+        return (R_RELEVANT_HOP if is_relevant else R_IRRELEVANT_HOP) + milestone
 
     def _action_backtrack(self) -> float:
         if len(self._trail) < 2:
