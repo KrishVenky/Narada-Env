@@ -354,6 +354,8 @@ class NaradaEnvironment:
             trail=trail_nodes,
             patient_phenotypes=case.patient_hpo_ids,
             phenotype_names=case.patient_phenotype_names,
+            phenotypes_absent=case.absent_hpo_ids,
+            phenotype_absent_names=case.absent_phenotype_names,
             candidate_variants=case.candidate_variants,
             step_reward=round(step_reward, 4),
             cumulative_reward=round(self._cumulative_reward, 4),

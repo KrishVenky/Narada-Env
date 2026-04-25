@@ -54,6 +54,8 @@ class NaradaObservation(BaseModel):
     trail: List[GraphNode] = Field(default_factory=list)
     patient_phenotypes: List[str]      # HPO term IDs e.g. ["HP:0001250"]
     phenotype_names: List[str]         # human-readable, parallel to patient_phenotypes
+    phenotypes_absent: List[str] = Field(default_factory=list)       # HPO IDs explicitly absent
+    phenotype_absent_names: List[str] = Field(default_factory=list)  # human-readable absent names
     candidate_variants: List[Variant]  # 5–20 variants to choose from
     step_reward: float = 0.0
     cumulative_reward: float = 0.0

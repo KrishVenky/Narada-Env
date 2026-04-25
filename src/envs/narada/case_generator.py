@@ -115,6 +115,8 @@ class PatientCase:
         starting_node_id: str,
         relevant_node_ids: Set[str],
         decoy_gene: Optional[str] = None,
+        absent_hpo_ids: Optional[List[str]] = None,
+        absent_phenotype_names: Optional[List[str]] = None,
     ) -> None:
         self.case_id = case_id
         self.task_type = task_type
@@ -123,6 +125,8 @@ class PatientCase:
         self.causal_allele_ids = causal_allele_ids
         self.patient_hpo_ids = patient_hpo_ids
         self.patient_phenotype_names = patient_phenotype_names
+        self.absent_hpo_ids = absent_hpo_ids or []
+        self.absent_phenotype_names = absent_phenotype_names or []
         self.candidate_variants = candidate_variants
         self.starting_node_id = starting_node_id
         self.relevant_node_ids = relevant_node_ids
@@ -193,6 +197,13 @@ def generate_monogenic_case(
     n_pheno = rng.randint(3, 4)
     hpo_ids, hpo_names = _pick_hpo_subset(disease["hpo_ids"], graph, n_pheno, rng)
 
+    # Absent phenotypes: disease HPO terms the patient does NOT have (diagnostic exclusions)
+    chosen_set = set(hpo_ids)
+    absent_candidates = [h for h in disease["hpo_ids"] if h not in chosen_set and h in graph.nodes]
+    rng.shuffle(absent_candidates)
+    absent_hpo_ids = absent_candidates[:3]
+    absent_names = [graph.get_hpo_name(h) for h in absent_hpo_ids]
+
     # Candidate variants: causal + 3-6 distractors from same-pathway genes
     target_pathway = disease["pathway"]
     distractor_genes = [
@@ -230,6 +241,8 @@ def generate_monogenic_case(
         candidate_variants=candidates,
         starting_node_id=starting_node,
         relevant_node_ids=relevant,
+        absent_hpo_ids=absent_hpo_ids,
+        absent_phenotype_names=absent_names,
     )
 
 
@@ -269,6 +282,13 @@ def generate_oligogenic_case(
     n_pheno = rng.randint(5, min(7, len(disease["hpo_ids"])))
     hpo_ids, hpo_names = _pick_hpo_subset(disease["hpo_ids"], graph, n_pheno, rng)
 
+    # Absent phenotypes
+    chosen_set = set(hpo_ids)
+    absent_candidates = [h for h in disease["hpo_ids"] if h not in chosen_set and h in graph.nodes]
+    rng.shuffle(absent_candidates)
+    absent_hpo_ids = absent_candidates[:3]
+    absent_names = [graph.get_hpo_name(h) for h in absent_hpo_ids]
+
     # Distractors: from same-pathway genes
     target_pathway = disease["pathway"]
     distractor_genes = [
@@ -307,6 +327,8 @@ def generate_oligogenic_case(
         candidate_variants=candidates,
         starting_node_id=starting_node,
         relevant_node_ids=relevant,
+        absent_hpo_ids=absent_hpo_ids,
+        absent_phenotype_names=absent_names,
     )
 
 
@@ -339,6 +361,13 @@ def generate_mismatch_case(
     # Patient phenotypes: 4-6 terms
     n_pheno = rng.randint(4, min(6, len(disease["hpo_ids"])))
     hpo_ids, hpo_names = _pick_hpo_subset(disease["hpo_ids"], graph, n_pheno, rng)
+
+    # Absent phenotypes
+    chosen_set = set(hpo_ids)
+    absent_candidates = [h for h in disease["hpo_ids"] if h not in chosen_set and h in graph.nodes]
+    rng.shuffle(absent_candidates)
+    absent_hpo_ids = absent_candidates[:3]
+    absent_names = [graph.get_hpo_name(h) for h in absent_hpo_ids]
 
     # DECOY: pick a high-pathogenicity BRCA1/BRCA2 frameshift
     decoy_gene = rng.choice([g for g in _DECOY_GENES if graph.get_variants_for_gene(g)])
@@ -389,6 +418,8 @@ def generate_mismatch_case(
         starting_node_id=starting_node,
         relevant_node_ids=relevant,
         decoy_gene=decoy_gene,
+        absent_hpo_ids=absent_hpo_ids,
+        absent_phenotype_names=absent_names,
     )
 
 

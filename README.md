@@ -12,6 +12,8 @@ pinned: false
 
 **Meta × PyTorch OpenEnv Hackathon × Scaler School of Technology — Grand Finale**
 
+**Live environment:** [krishvenky-narada-env.hf.space](https://krishvenky-narada-env.hf.space)
+
 ---
 
 ## The Problem
@@ -26,6 +28,8 @@ Most rare disease patients wait **4–7 years** for a correct diagnosis ([Lancet
 ClinVar contains 2M+ catalogued genetic variants; HPO maps 15,000+ diseases to phenotypic signatures. The bottleneck is **reasoning under uncertainty** — cross-referencing patient symptoms against thousands of candidate variants while resisting high-salience but causally irrelevant signals.
 
 This is exactly where current LLMs fail: they follow pathogenicity scores, not causal chains.
+
+**Narada's scope:** The full diagnostic odyssey involves referral pathways, specialist availability, and fragmented care across institutions. Narada targets the **variant prioritization substage** — given a patient's phenotype profile and a shortlist of candidate genomic variants, which variant is causally responsible? This substage has a ground-truth signal (ClinVar), a tractable action space (graph traversal), and measurable improvement via RL — making it ideal for methodology proof-of-concept work.
 
 ---
 
@@ -44,7 +48,7 @@ A **reinforcement learning environment** where an LLM agent navigates a 55,000-n
 **Three-agent system:**
 - **Detective (Qwen3-1.7B, trainable)** — navigates the graph, flags the causal variant
 - **Overseer** — evaluates reasoning quality, penalises hallucinated hops
-- **Adversary (exploratory)** — attempts to generate harder cases targeting Detective failure patterns *(work in progress — reliable curriculum generation from agent error logs is an open research problem)*
+- **Adversary** *(planned)* — curriculum case generation targeting Detective failure patterns; reliable adversarial curriculum from agent error logs is an open research problem, deferred to future work
 
 ---
 
@@ -150,7 +154,9 @@ All scores strictly in `(0.01, 0.99)`. `[END]` line always includes `score=` fie
 
 ## Baseline Benchmark
 
-Model: `llama-3.3-70b-versatile` via Groq (zero-shot, no fine-tuning). Two single-episode samples show the core problem: zero-shot LLMs are **inconsistent** and frequently collapse into `summarise_trail` loops instead of navigating the graph.
+Zero-shot evaluation via `inference.py` (Groq backend, no fine-tuning). Two single-episode samples per model show the core problem: zero-shot LLMs are **inconsistent** and frequently collapse into `summarise_trail` loops instead of navigating the graph.
+
+### llama-3.3-70b-versatile (reference runs)
 
 | Task | Run 1 Score | Run 2 Score | Notes |
 |---|---|---|---|
@@ -158,7 +164,16 @@ Model: `llama-3.3-70b-versatile` via Groq (zero-shot, no fine-tuning). Two singl
 | `oligogenic` | 0.500 | 0.240 | Run 1: WS disconnect mid-episode. Run 2: full summarise_trail timeout |
 | `phenotype_mismatch` | 0.060 | 0.225 | Run 1: looped on wrong gene 9× before giving up. Run 2: pure timeout |
 
-The inconsistency (0.990 vs 0.433 on the same task) is the core motivation for GRPO training: the agent occasionally finds the right path but cannot do so reliably. Fine-tuning on the graph-navigation reward signal is intended to make correct phenotype → gene → variant chaining the default behavior, not the lucky outcome.
+### Multi-model comparison (zero-shot, monogenic task, seed=42)
+
+| Model | Score | Steps | Behavior |
+|---|---|---|---|
+| `llama-3.3-70b-versatile` | 0.990 | 4 | Correct flag in 4 hops |
+| `llama-3.1-8b-instant` | 0.433 | 15 | summarise_trail loop |
+| `mixtral-8x7b-32768` | 0.433 | 15 | summarise_trail loop |
+| `gemma2-9b-it` | 0.433 | 15 | summarise_trail loop |
+
+The variance across model sizes (0.990 vs 0.433) is the core motivation for GRPO training: larger models occasionally find the right path but cannot do so reliably, and smaller models collapse to the `summarise_trail` fallback immediately. Fine-tuning on the graph-navigation reward signal is intended to make correct phenotype → gene → variant chaining the default behavior, not the lucky outcome.
 
 **Target post-GRPO (Qwen3-1.7B):** consistent flag accuracy > 50% on monogenic, causal path coverage > 60%.
 

@@ -121,6 +121,7 @@ CLINICAL REASONING RULES:
      or neurological. Resist it.
   5. In oligogenic cases: you must flag ALL contributing variants for full reward.
   6. Efficiency matters — correct early flags earn a timing bonus.
+  7. Use ABSENT PHENOTYPES to rule out diseases — if a hallmark symptom is absent, deprioritise that disease.
 
 OUTPUT FORMAT (strict JSON):
 {
@@ -139,10 +140,17 @@ def format_observation(obs: NaradaObservation) -> str:
     lines = [
         f"STEP {obs.step}/{obs.max_steps} | Task: {obs.task_type}",
         "",
-        "PATIENT PHENOTYPES:",
+        "PATIENT PHENOTYPES (present):",
     ]
     for hpo_id, name in zip(obs.patient_phenotypes, obs.phenotype_names):
-        lines.append(f"  {hpo_id} — {name}")
+        lines.append(f"  + {hpo_id} — {name}")
+
+    if obs.phenotypes_absent:
+        lines.append("")
+        lines.append("PHENOTYPES ABSENT (explicitly ruled out — use to narrow differential):")
+        for i, hpo_id in enumerate(obs.phenotypes_absent):
+            name = obs.phenotype_absent_names[i] if i < len(obs.phenotype_absent_names) else hpo_id
+            lines.append(f"  - {hpo_id} — {name}")
 
     lines += ["", f"CURRENT NODE: [{obs.current_node.type.upper()}] {obs.current_node.name}"]
     lines.append(f"  ID: {obs.current_node.id}")
