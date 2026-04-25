@@ -1,4 +1,4 @@
-FROM pytorch/pytorch:2.3.0-cuda12.1-cudnn8-devel
+FROM pytorch/pytorch:2.6.0-cuda12.4-cudnn9-devel
 
 # System deps
 RUN apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*
@@ -17,8 +17,9 @@ RUN pip install --no-cache-dir \
     "transformers>=4.40.0" \
     "huggingface_hub>=0.22.0"
 
-RUN pip install --no-cache-dir \
-    "unsloth[cu121-torch230] @ git+https://github.com/unslothai/unsloth.git"
+RUN pip install --no-cache-dir unsloth_zoo && \
+    pip install --no-cache-dir \
+    "unsloth @ git+https://github.com/unslothai/unsloth.git"
 
 WORKDIR /app
 COPY train.py .

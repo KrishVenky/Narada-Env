@@ -29,6 +29,12 @@ nest_asyncio.apply()
 
 import websockets
 import torch
+
+# torchao 0.17+ uses torch.utils._pytree.register_constant, added in PyTorch 2.7.
+# Stub it out so the import works on PyTorch 2.6 (we use bitsandbytes, not torchao).
+if not hasattr(torch.utils._pytree, "register_constant"):
+    torch.utils._pytree.register_constant = lambda cls: cls
+
 from datasets import Dataset
 from unsloth import FastLanguageModel
 
