@@ -1,0 +1,882 @@
+﻿Hackathon Self-Serve Guide: Build an RL Environment, Train an LLM, Ship a Demo
+0) What you are building
+The core idea is not just to fine-tune a text model, but to build a specialized LLM system that can act inside an environment, get feedback, and improve through reinforcement learning. The practical stack discussed here is:
+Environment → verifier/reward functions → TRL trainer → Unsloth for efficiency → deployment on OpenEnv / Spaces.
+A strong project usually looks like one of these,
+Please refer to [External] Apr ‘26 OpenEnv Hackathon Themes for theme guidelines on selecting & forming problem statements.
+1) Start with the right project idea
+Pick a task that has all three of these properties:
+1. The model can act step by step
+2. You can verify success programmatically
+3. The task is hard enough to be interesting, but not so hard that the model never succeeds
+This last point matters a lot. RL only works if the probability of getting a good answer is greater than zero. If your task is so hard that the model never gets any reward, you will burn compute and learn nothing.
+Please refer to [External] Apr ‘26 OpenEnv Hackathon Themes for theme guidelines on selecting & forming problem statements.
+A useful rule: prefer tasks with crisp verification over tasks that only “look good” to a human. RL gets easier when the reward is objective.
+2) Understand the minimum RL loop before you build
+At a high level, your loop is:
+1. Give the model a prompt
+2. Let it generate an action, strategy, answer, or code
+3. Execute that output in an environment or verifier
+4. Convert the result into a reward
+5. Update the model so higher-reward behavior becomes more likely
+That is the practical mental model for RL here. The system samples many outputs, scores them, and shifts probability mass away from bad outputs and toward better ones.
+One especially useful framing is that RL is like a more efficient version of repeated in-context improvement. Instead of repeatedly stuffing previous examples into the context, you let backpropagation store what worked into the weights.
+3) Decide whether you need SFT first
+Use this simple rule:
+* If you have a lot of good data, use SFT
+* If you do not have data but can verify outputs, use RL
+* In many practical cases, do a little SFT first, then RL
+Why this matters:
+* SFT is generally more sample-efficient
+* RL is useful when you can test outcomes but cannot cheaply author ideal traces
+* RL often needs some warm start, formatting priming, or easy tasks first so that good rollouts happen at all
+For hackathon teams, the best path is usually:
+1. Start from a capable base/instruct model
+2. Add light formatting or task scaffolding if needed
+3. Use RL for improvement, not as magic from scratch
+4) Design the environment before you design the trainer
+Treat the environment as a first-class artifact. It should define:
+* reset(): start a fresh episode
+* step(action): apply an action and return the next result
+* state() / observation: what the agent sees
+* reward: what counts as progress or success
+OpenEnv standardizes this so the same training code can work across many environments, instead of every team inventing a different API. That is one of the main reasons to use it in a hackathon.
+Think about your environment in this order:
+1. What does the agent observe?
+2. What actions can it take?
+3. What ends an episode?
+4. How do you compute reward?
+5. How do you stop abuse, infinite loops, or cheating?
+5) Build the environment using OpenEnv
+The intended workflow is to bootstrap an environment skeleton and then fill in the behavior. OpenEnv’s CLI creates the scaffolding for you. The environment is implemented as a Python package and exposed via a FastAPI app.
+Your implementation typically defines:
+* action dataclass
+* observation dataclass
+* state representation
+* environment methods like reset and step
+* FastAPI wrapper / client-server interface
+That gives you a clean separation:
+* the environment handles world dynamics and scoring,
+* the trainer handles optimization,
+* and the model just learns to act inside the interface.
+6) Keep the task simple at first
+Do not begin with your hardest benchmark. Start with the easiest version of your environment that still proves the concept. This is where curriculum learning helps.
+A good progression:
+1. easy tasks with short horizons,
+2. medium tasks with a little more branching,
+3. harder tasks only after the model starts getting non-zero reward.
+The principle is simple: make success possible early. If the model never sees successful trajectories, learning stalls.
+7) Design rewards carefully
+Your reward function is your task specification. If it is weak, incomplete, or easy to exploit, the model will optimize the wrong thing very efficiently.
+A strong reward design usually includes multiple components, for example:
+* execution success,
+* correctness,
+* format compliance,
+* timeouts,
+* resource usage,
+* safety constraints,
+* and anti-cheating checks.
+One explicit recommendation was to use multiple independent reward functions, not just one. If you only have a single reward signal, it is easier for the model to hack it. Multiple independent checks reduce that risk.
+For example, for a coding environment:
+* reward passing tests,
+* penalize timeouts,
+* reward format compliance,
+* reject use of forbidden globals,
+* and separately verify the function contract.
+8) Protect yourself against reward hacking
+Reward hacking is one of the biggest practical failure modes. The model may learn shortcuts that maximize your reward without solving the real task. Examples mentioned include:
+* editing timers,
+* caching results,
+* abusing globals,
+* mutating protected state,
+* or exploiting environment bugs.
+What to do:
+1. Use multiple independent reward functions
+2. Lock down execution where possible
+3. Add time limits
+4. Avoid unrestricted global state
+5. Sample outputs frequently and inspect them
+6. Terminate or roll back runs if behavior drifts badly
+A particularly practical recommendation was to use a locked-down function or restricted execution approach so the model cannot rely on undeclared globals or hidden cached state.
+Also, do not just let training run forever without checking generations. Periodic human inspection is still necessary.
+9) Use process-aware feedback when you can
+Naively assigning the same final reward to every token is inefficient. If possible, use richer supervision that distinguishes good intermediate steps from bad ones. That is the idea behind process supervision.
+In practice, this can be approximated by:
+* line-by-line checks,
+* step-level verifiers,
+* program trace analysis,
+* or LLM-as-a-judge for intermediate reasoning.
+But be careful: LLM-as-a-judge can itself be gamed. Use it as one signal, not the only signal.
+For a hackathon, outcome-based verification plus a few lightweight process checks is usually the sweet spot.
+10) Pick the right training stack
+The intended stack here is:
+* TRL for RL training algorithms
+* Unsloth to make RL training and inference more efficient
+* OpenEnv to standardize environment interaction
+This combination works because:
+* OpenEnv gives you a common environment interface
+* TRL gives you RL trainers like GRPO
+* Unsloth reduces memory use and improves efficiency on top of TRL
+One of the practical examples used the same prompt repeated many times, routed through an environment, with TRL driving training and Unsloth helping with performance.
+11) Prefer GRPO / RLVR style training for verifiable tasks
+The RL setup discussed here leans toward RL with verifiable rewards:
+* instead of a learned reward model,
+* use a verifier, test harness, regex check, executor, or environment.
+GRPO was described as a more efficient evolution relative to older PPO-style setups, especially by simplifying away parts like the value model.
+For hackathon purposes, the key practical takeaway is:
+* if the task is verifiable,
+* build the verifier first,
+* then plug that verifier into RL training.
+12) Keep inference fast
+One important point: in RL for LLMs, inference can dominate total runtime. Over time, rollout generation often becomes the bottleneck, not the optimizer step.
+That means your project speed depends heavily on:
+* fast sampling,
+* tight environment loops,
+* low-overhead execution,
+* and efficient model runtime.
+This is one reason Unsloth matters in the stack, and another reason to avoid overly heavy environments early in the hackathon.
+13) Deploy your environment early
+OpenEnv environments are designed to be deployed as Hugging Face Spaces, which provide:
+* a running server,
+* a Git repository,
+* and a container registry.
+That gives you several ways to work:
+* interact with the remote Space directly,
+* install the client code from the repo,
+* pull and run the container locally,
+* or run the FastAPI app locally via Python/Uvicorn.
+Why this is good for a hackathon:
+* one shared source of truth,
+* easier collaboration,
+* easier demos,
+* easier switching between local and remote execution.
+A good habit is to deploy an early version of the environment before training seriously. That catches API and packaging issues early.
+14) Scale only after the environment is stable
+There was a dedicated tutorial flow around:
+1. environment,
+2. deployment,
+3. scaling,
+4. training with TRL and Wordle.
+Follow the same order.
+Do not start with scale. First confirm:
+* reset works,
+* step works,
+* rewards are sensible,
+* timeouts work,
+* logs are visible,
+* and the environment can be run locally and remotely.
+Only then:
+* increase batch sizes,
+* duplicate prompts or tasks,
+* expand task diversity,
+* and benchmark throughput.
+15) Monitor the right things during training
+Do not watch only one scalar. Monitor:
+* overall reward,
+* individual reward function columns,
+* success indicators,
+* timeout frequency,
+* and generated strategies over time.
+A very concrete suggestion was:
+* watch whether the reward is going up,
+* and separately watch critical columns like “function works.”
+Also inspect actual generations during training. A rising reward is not enough if the model is learning to exploit bugs.
+16) Save models correctly
+If you use QLoRA / LoRA-style training, be careful when saving. One explicit warning was:
+Do not upcast a 4-bit model to 16-bit and then merge the LoRA weights naively. That can badly damage model quality. Instead, use the proper merged-save path, or use the adapters directly.
+For participants, that means:
+* keep your training save path simple,
+* test post-training inference immediately,
+* and do not leave export until the end.
+17) How to structure your team over the hackathon
+A very effective team split is:
+Person A: Environment
+* builds reset/step/state
+* adds timeouts and safety constraints
+* makes local and remote execution work
+Person B: Verifier / Rewards
+* writes multiple reward functions
+* adds anti-hacking checks
+* makes failure cases visible
+Person C: Training
+* sets up TRL + Unsloth
+* runs experiments
+* tracks metrics and generations
+Person D: Demo / Product
+* prepares the Space demo
+* creates a simple interface
+* records examples and final benchmarks
+This split matches the way the stack naturally decomposes in practice.
+18) A practical 1-day execution plan
+Phase 1: Pick a narrow task
+Choose a small, verifiable environment. Avoid huge long-horizon tasks first.
+Phase 2: Build the environment
+Use OpenEnv init, implement reset/step/state, and get a local loop working.
+Phase 3: Build rewards
+Add at least 2–4 independent reward checks, plus timeout and anti-cheat logic.
+Phase 4: Deploy
+Push to a Space or run locally via container/Uvicorn so teammates can use the same environment.
+Phase 5: Train small
+Run a tiny TRL + Unsloth experiment first. Look at outputs, not just metrics.
+Phase 6: Inspect for hacking
+Sample generations. Check for globals, hacks, environment abuse, or suspicious shortcuts.
+Phase 7: Add curriculum
+If the model gets zero reward too often, simplify tasks or add easier start states.
+Phase 8: Train bigger
+Only after the loop is stable should you increase scale, batch size, or environment diversity.
+Phase 9: Save and demo
+Export the trained model correctly, test inference, and show before/after behavior.
+19) What judges or reviewers will likely find compelling
+The strongest hackathon projects usually show:
+* a clear environment design,
+* objective reward functions,
+* evidence that the model improved,
+* prevention against reward hacking,
+* a reproducible deployment story,
+* and a sharp demo.
+A simple but strong demo format is:
+1. baseline model attempt,
+2. reward/verifier output,
+3. trained model attempt,
+4. measurable improvement,
+5. short explanation of safeguards.
+20) Suggested problem statement theme directions
+Please Refer to [External] Apr ‘26 OpenEnv Hackathon Themes
+21) Common mistakes to avoid
+* Picking a task so hard that success probability is zero
+* Using only one reward function
+* Not checking for reward hacking
+* Training before the environment is stable
+* Relying only on average reward and not inspecting outputs
+* Forgetting timeouts and sandbox limits
+* Saving LoRA/QLoRA models incorrectly
+
+
+22) Learning Resources
+
+
+(Recommended) RL Environment Lecture Chapters:
+RL Mega Lecture
+
+
+
+
+Module 1: Why OpenEnv? (~7 min)
+▸ Workshop 8:02–15:05 — https://www.youtube.com/watch?v=1jU05MlENOI&t=482s
+▸ Sanyam: RL loop, fragmented env APIs, OpenEnv as universal interface, Gymnasium spec + Docker
+▸ Alt: Mega Lecture 40:01–46:00 — https://www.youtube.com/watch?v=Jew4lhAiqnw&t=2401s
+
+
+Module 2: Using Existing Envs (~7.5 min)
+▸ Workshop 35:33–43:05 — https://www.youtube.com/watch?v=1jU05MlENOI&t=2133s
+▸ Ben: Hub org, env collections, 3 Space interfaces (server/repo/registry), from_hub
+▸ Alt: Mega Lecture 1:24:11–1:30:00 — https://www.youtube.com/watch?v=Jew4lhAiqnw&t=5051s
+
+
+Module 3: Deploying Envs (~9 min)
+▸ Mega Lecture 1:30:00–1:39:07 — https://www.youtube.com/watch?v=Jew4lhAiqnw&t=5400s
+▸ Ben: live openenv init, scaffold, running locally, openenv push, Docker run from Space
+▸ Alt: Workshop 43:05–48:30 — https://www.youtube.com/watch?v=1jU05MlENOI&t=2585s
+
+
+Module 4: Building Your Own (~6.5 min)
+▸ Workshop 43:45–50:20 — https://www.youtube.com/watch?v=1jU05MlENOI&t=2625s
+▸ Ben: scaffold files, business logic (reset/step), models, client, publishing
+▸ Alt: Mega Lecture 1:33:30–1:39:07 — https://www.youtube.com/watch?v=Jew4lhAiqnw&t=5610s
+
+
+Module 5: Training + TRL (~14 min)
+▸ Mega Lecture 1:53:20–2:07:12 — https://www.youtube.com/watch?v=Jew4lhAiqnw&t=6800s
+▸ Lewis: Wordle GRPO walkthrough — rollout function, reward shaping, GRPOTrainer, live training
+▸ Alt: Workshop 22:24–34:12 — https://www.youtube.com/watch?v=1jU05MlENOI&t=1344s
+
+
+
+
+Resources & Materials
+Official hackathon resources for all finalists. Use these to build, train, and iterate.
+1. OpenEnv Core
+An interface library for RL post-training with environments.
+* GitHub: https://github.com/meta-pytorch/OpenEnv
+* Docs: https://meta-pytorch.org/OpenEnv/
+2. HuggingFace OpenEnv Hub
+* Environments: https://huggingface.co/openenv
+* Spaces: https://huggingface.co/openenv/spaces
+3. Tutorials
+Build, run, and train RL environments and training pipelines.
+* All Tutorials: https://github.com/meta-pytorch/OpenEnv/tree/main/tutorial
+* Training Examples: https://github.com/meta-pytorch/OpenEnv/tree/main/tutorial/examples
+* Environment Examples: https://github.com/meta-pytorch/OpenEnv/tree/main/envs
+4. YouTube: Building RL Environments
+* https://www.youtube.com/watch?v=0airz7BhBiA
+* https://www.youtube.com/watch?v=ap4q4sAK4OY
+* https://www.youtube.com/watch?v=Jew4lhAiqnw
+* https://www.youtube.com/live/kkCNMz0Ptd8?si=JJ7og8x5qc7_Gi0e 
+* https://www.youtube.com/watch?v=Jew4lhAiqnw 
+5. Research Papers: Reward Engineering
+* https://arxiv.org/abs/2408.10215
+* https://arxiv.org/abs/2601.19100
+Tip: Chat with these papers using LLMs for quick insights on engineering rewards.
+
+
+
+
+1) What is reinforcement learning in the context of LLMs?
+Reinforcement learning for LLMs is a loop where the model generates an answer, code snippet, plan, or action sequence; that output is evaluated by a verifier or environment; and the resulting reward is used to update the model so higher-reward behaviors become more likely over time. In practice, this is often used after pretraining and supervised fine-tuning to sharpen behaviors like reasoning, code generation, or tool use. The session framed this intuition as turning repeated trial-and-error into weight updates instead of stuffing more and more examples into the prompt.
+A good mental model is: supervised fine-tuning tells the model “copy this good target,” while RL tells it “try many possibilities and move probability mass toward the ones that score better.” PPO is one classic algorithm for this style of training, and GRPO is a later variant used heavily in modern LLM work because it can be more memory-efficient for certain setups. (arXiv)
+For deeper reading:
+* TRL docs for RL trainers and workflows. (Hugging Face)
+* PPO paper. (arXiv)
+* DeepSeekMath for GRPO. (arXiv)
+2) Why do rewards matter so much?
+Rewards are the only signal telling the model what “better” means. If your reward is well aligned with the real task, RL can push the model toward genuinely useful behavior. If your reward is incomplete or easy to game, the model will optimize the wrong thing very effectively. The session emphasized that RL gives you what you asked for, not necessarily what you meant.
+For example, if you reward generated code only for passing a shallow regex or a weak unit test, the model may learn to exploit those checks instead of solving the underlying problem. This is why reward design is not a detail; it is the task specification. DeepMind’s discussion of “specification gaming” makes the same point in broader RL terms: weakly specified rewards create loopholes that search will discover. (Google DeepMind)
+Useful reading:
+* DeepMind on specification gaming. (Google DeepMind)
+* Lilian Weng on reward hacking. (Lil'Log)
+3) What is rewards engineering?
+Rewards engineering is the work of designing, combining, validating, and monitoring reward signals so that optimization pressure produces the behavior you actually want. In LLM RL, that usually means deciding:
+* what gets rewarded,
+* how much it gets rewarded,
+* when it gets rewarded,
+* what gets penalized,
+* and how you audit whether the reward is being gamed.
+A practical reward function often has several components. For a code task, you might combine syntax validity, execution success, unit test pass rate, latency, memory use, formatting compliance, and safety checks. The session highlighted verifier-based reward design such as formatting checks, execution checks, regex checks, and environment-based evaluation instead of a learned reward model alone.
+A useful principle is to reward outcomes first, then add process constraints only where needed. Over-shaping the reward can make training brittle or bias the model into narrow strategies, while under-shaping makes hacking easier. (Google DeepMind)
+4) What is RLVR, and how is it different from using a reward model?
+RLVR usually means reinforcement learning with verifiable rewards. Instead of asking a learned reward model to score outputs, you use a verifier, tester, or environment that can check correctness more directly. The session gave examples like formatting checks, execution checks, regex-based checks, and environment rollouts.
+This is powerful when correctness is externally testable. Code can be compiled and unit-tested. Math can often be checked against a final answer or symbolic verifier. Games can expose reward from the environment. Browser tasks can be checked by page state or task completion. In such cases, verifier-driven rewards are often more trustworthy than a purely learned scalar reward model.
+TRL documents this broader environment-based training pattern, and OpenEnv is meant to standardize how such environments are defined and used. (Hugging Face)
+5) Why do RL environments matter for LLMs?
+Static prompt-response datasets are useful, but they are limited. Real deployments require models to interact with systems: codebases, browsers, files, APIs, games, tools, and simulators. RL environments let the model act, observe consequences, and keep going across multiple steps, which is much closer to real agent behavior. The session described environments as the bridge from isolated prompt solving to real-world interaction.
+They also enable dynamic difficulty and richer feedback. Instead of training forever on a fixed set of prompts, the environment can generate or surface tasks that are more appropriate for the current model, which makes curriculum learning and continual challenge easier. This matches the broader “RL with environments” direction discussed in recent OpenEnv and TRL material. (Hugging Face)
+For examples:
+* BrowserGym for web-task environments. (GitHub)
+* OpenEnv course and TRL integration docs. (GitHub)
+6) What is OpenEnv, and why would a hackathon team use it?
+OpenEnv is an open-source framework for defining and interacting with RL environments for LLM and agent training. The session described it as a standardized interface around concepts like reset, step, state, observations, actions, and rewards, with deployment built around Hugging Face Spaces and containerized execution.
+A hackathon team would use OpenEnv because it reduces environment plumbing. Instead of inventing a new interface for each task, you can standardize how the model talks to the environment and then connect that to a trainer like TRL. That means you spend more time on task design and rewards, and less on adapter glue. The session also highlighted openenv init for bootstrapping an environment skeleton quickly.
+Good starting points:
+* OpenEnv repo. (GitHub)
+* OpenEnv course. (GitHub)
+* TRL’s OpenEnv integration guide. (Hugging Face)
+7) How does OpenEnv work at a high level?
+At a high level, an OpenEnv environment exposes a small set of standard operations:
+* reset the environment,
+* step the environment with an action,
+* return observations, rewards, and state.
+The session described OpenEnv environments as FastAPI applications that can be run locally, deployed on Hugging Face Spaces, or pulled as containers. That gives teams several options: they can use the remote environment directly, install client code from the repo, or run the environment locally through the container image.
+This design is useful because it treats environments as portable, versioned software artifacts rather than ad hoc scripts. Hugging Face’s own TRL docs describe OpenEnv similarly, including support for backend-server execution and standardized APIs. (Hugging Face)
+8) Where do TRL and Unsloth fit in this stack?
+TRL is the training library. It provides trainers and workflows for SFT, DPO, PPO, GRPO, reward modeling, and related post-training methods for transformer models. In a typical hackathon setup, TRL handles rollout collection, reward integration, optimization, logging, and trainer configuration. (Hugging Face)
+Unsloth fits in as the acceleration and memory-efficiency layer for training and RL fine-tuning. The session described Unsloth as making RL training more efficient and inference faster, which matters because rollout generation often dominates runtime in RL loops. It also noted a practical QLoRA warning: don’t naively upcast a 4-bit model to 16-bit and then merge adapters, because that can damage model quality; use the proper merge path instead.
+Relevant docs:
+* TRL docs and GRPO cookbook. (Hugging Face)
+* Unsloth repository/readme. (GitHub)
+9) What is the difference between PPO and GRPO?
+PPO is a classic policy optimization algorithm that stabilizes updates by constraining how much the policy changes between iterations. It is one of the most influential RL algorithms in modern deep learning. (arXiv)
+GRPO is a later group-relative variant used in LLM training that compares sampled outputs within a group to estimate relative advantage, and it is often discussed as a more memory-efficient alternative to full PPO-style setups in some LLM post-training pipelines. The session summarized GRPO as a more efficient version of PPO and specifically noted removing the value model from the setup.
+For deeper details:
+* PPO paper. (arXiv)
+* DeepSeekMath / GRPO references via TRL paper index and cookbook. (arXiv)
+10) Why is RL often described as inefficient, yet still useful?
+RL is often inefficient because the feedback is sparse and delayed. A long rollout may end in one scalar reward, and that weak signal has to train many decisions. The session used a simple example: if a code answer fails at one line but you assign the same negative reward to every token, you’re throwing away a lot of structure.
+It is still useful because it can optimize behaviors where exact supervised targets are unavailable, too expensive, or too limiting. If you can verify success but cannot easily author perfect demonstrations for every scenario, RL can still improve the model by repeated interaction. This is why RL is especially attractive for code execution, tool use, games, browser tasks, and agent workflows.
+A practical takeaway: use RL where verifiers exist and where exploration is worth the extra compute.
+11) What is process supervision, and why is it important?
+Process supervision means giving feedback on intermediate reasoning or intermediate steps, not only on the final outcome. The session contrasted this with assigning the same reward to every token in the answer, which can be very wasteful. Under process supervision, you try to identify which parts of a trace were good, irrelevant, or harmful.
+This matters because not all failures are equal. Maybe the model chose the right algorithmic approach but made one implementation mistake. Final-outcome-only rewards blur that distinction. Step-aware rewards can improve sample efficiency and make debugging easier, though they also raise new risks if the step labels are noisy or exploitable.
+The session also noted that process supervision is often approximated with humans or LLM-as-a-judge. That can help, but it creates another optimization target that itself may be gamed.
+12) What is reward hacking?
+Reward hacking is when the model finds a way to maximize reward without genuinely doing the intended task. In other words, the optimization succeeds, but the task specification failed. The session gave intuitive examples such as editing variables, bypassing intended checks, or exploiting quirks in the environment rather than solving the real problem.
+This is the same phenomenon often called specification gaming. DeepMind describes it as agents exploiting flaws or ambiguities in the reward function, and Lilian Weng’s overview covers how common and fundamental this problem is in RL systems. (Google DeepMind)
+A useful mindset is: reward hacking is not proof the model is “evil”; it is proof that optimization pressure found a loophole.
+13) How can a hackathon team reduce reward hacking in practice?
+Use strong verifiers. Prefer executable checks over stylistic heuristics. For code, run tests, time the solution, validate output shapes and edge cases, and isolate execution. For tool use, verify actual state transitions, not just verbal claims. The session repeatedly emphasized verifiers and environments over vague reward signals.
+Monitor training actively. The session recommended sampling outputs periodically, looking for suspicious patterns, and terminating or rolling back runs when drift appears. It also suggested filtering bad responses and adding guardrails when patterns of exploitation are observed.
+Use layered rewards. Combine success criteria with anti-cheat constraints. For example:
+* pass tests,
+* do not edit protected files,
+* do not bypass timers,
+* stay within time and memory budget,
+* preserve task-required formatting,
+* and log intermediate actions for audit.
+This general strategy aligns with broader RL safety guidance on specification gaming. (Google DeepMind)
+14) What is curriculum learning, and why does it help RL?
+Curriculum learning means controlling the order or difficulty of training tasks so the model learns from easier tasks first and gradually moves to harder ones. The session directly recommended this for RL: if tasks are too hard at the start, the model may never produce a successful rollout, which means the reward signal is effectively zero and learning stalls.
+This is especially important in LLM RL because many tasks are long-horizon and brittle. An easier initial distribution can bootstrap behavior, after which harder tasks become reachable. In the RL literature more broadly, curriculum learning is a standard way to improve exploration and sample efficiency in difficult environments. (arXiv)
+Practical idea for hackathons:
+* start with short horizons,
+* fewer tools,
+* simpler state spaces,
+* stronger hints,
+* easier test cases,
+* then gradually remove scaffolding.
+15) How do I know whether a task is suitable for RL?
+A task is a good candidate for RL if:
+* you can verify success or partial progress,
+* exploration is meaningful,
+* multi-step interaction matters,
+* and you do not already have abundant high-quality demonstrations.
+The session highlighted a key rule of thumb: the probability of a good answer must be greater than zero. If the task is so hard that the model never stumbles into any rewarding behavior, RL will waste compute. That means task selection, warm starts, formatting scaffolds, or light SFT can be essential.
+Good hackathon candidates include:
+* code generation with executable tests,
+* browser navigation with page-state checks,
+* games with clear win conditions,
+* API/tool workflows with verifiable side effects.
+16) Should we jump straight into RL, or do some SFT first?
+Usually, do some SFT or at least a warm start first. The session’s guidance was that pretraining carries most of the capability burden, SFT helps shape the behavior, and RL refines it. It explicitly argued against relying on RL alone from scratch for most practical settings.
+That matches modern post-training stacks: pretrain heavily, align or instruct-tune, then apply preference optimization and/or RL where it adds value. TRL’s supported workflows reflect exactly this broader stack. (Hugging Face)
+A hackathon-friendly recipe is:
+1. Start from a solid instruct model.
+2. Add a tiny amount of task-format SFT if needed.
+3. Build a strong verifier.
+4. Use GRPO/PPO-style RL only after the model can at least occasionally succeed.
+17) What should we actually monitor during RL training?
+Monitor more than the headline reward. The session specifically called out tracking reward trends, component rewards, and whether important success columns are improving over time. It also recommended checking generated strategies and periodically sampling outputs during training rather than letting runs continue blindly.
+Useful metrics include:
+* average reward,
+* verifier pass rate,
+* timeout rate,
+* format adherence,
+* rollout length,
+* diversity of successful solutions,
+* frequency of suspicious shortcuts,
+* and cost per useful trajectory.
+If the average reward rises but the actual task quality drops or becomes brittle, that is often a reward-design problem rather than a model-capability problem.
+18) What is a strong hackathon strategy for building an RL environment fast?
+Pick a task with a crisp verifier. Build the smallest environment that exposes reset, step, observations, and reward. Use OpenEnv to standardize the interface and TRL to handle training. Use Unsloth if you need to fit training into tighter hardware budgets. (Hugging Face)
+A practical sequence:
+1. Define the task and what “success” means.
+2. Write the verifier before writing the policy loop.
+3. Create a few toy tasks the model can solve.
+4. Add curriculum or easier variants first.
+5. Run small-scale debugging before long training.
+6. Sample outputs constantly for reward hacking.
+7. Only then scale rollouts and environment diversity.
+19) What are good starter resources for participants?
+For TRL:
+* Main docs. (Hugging Face)
+* PPO trainer docs. (Hugging Face)
+* GRPO cookbook. (Hugging Face)
+* Paper index for GRPO/DeepSeekMath references. (Hugging Face)
+For OpenEnv:
+* OpenEnv GitHub repo. (GitHub)
+* OpenEnv course. (GitHub)
+* TRL’s OpenEnv integration docs. (Hugging Face)
+For environments and benchmarks:
+* BrowserGym. (GitHub)
+For reward design and failure modes:
+* DeepMind on specification gaming. (Google DeepMind)
+* Lilian Weng on reward hacking. (Lil'Log)
+For RL algorithms:
+* PPO paper. (arXiv)
+* DeepSeekMath / GRPO paper. (arXiv)
+For Unsloth:
+* Unsloth repo/readme. (GitHub)
+20) What is the one-sentence summary participants should remember?
+If you can build a task where success is verifiable, difficulty is controllable, and loopholes are monitored, RL can turn an LLM from “good at answering” into “better at acting.”
+21) What is RLVR?
+RLVR stands for reinforcement learning with verifiable rewards. Instead of relying only on a learned reward model or human preference model, the training loop uses programmatic checks to determine whether an output is correct. Typical examples include exact-answer checks for math, unit tests for code, schema validation for structured output, or environment-based task completion checks. This makes RLVR especially attractive for domains where correctness can be verified automatically and consistently. (Label Studio)
+22) What is RLVE?
+RLVE is reinforcement learning with verifiable environments. The key idea is to train on environments that can procedurally generate tasks, expose adjustable difficulty, and provide algorithmically verifiable rewards. Recent work on adaptive verifiable environments argues that static prompt datasets often become either too easy or too hard during training, causing learning to stall, while adaptive environments keep the model near its capability frontier. (arXiv)
+23) How is RLVE different from RLVR?
+RLVR usually refers to verifiable rewards on a fixed or semi-fixed set of prompts or problems. RLVE goes a step further by making the task source itself dynamic: the environment can generate new problems, vary difficulty, and keep serving appropriately challenging tasks as the model improves. In practice, RLVE is often better for preventing saturation on static datasets and for building curriculum naturally into training. (arXiv)
+24) Why are RL environments useful for LLM post-training?
+They let the model interact, not just answer. In a real environment, the model can act, observe consequences, act again, and get reward from actual task outcomes. That makes environments a better fit for tool use, browsers, APIs, coding agents, games, and long-horizon tasks than plain prompt-response datasets. Hugging Face’s OpenEnv and TRL material reflects this shift toward environment-based agent training. (Hugging Face)
+25) Where do TRL, GRPO, and Unsloth fit in?
+TRL is the training framework that provides RL trainers and infrastructure for post-training transformer models, including GRPO. GRPO is the RL optimization method popularized in DeepSeekMath and now widely used in open LLM RL pipelines because it can be more memory-efficient than PPO-style setups in this context. Unsloth is typically used as the efficiency layer to make fine-tuning and RL training faster and more affordable on limited hardware. (Hugging Face)
+26) Why do rewards matter so much?
+Because the reward is the task definition as far as optimization is concerned. If your reward captures the real objective, RL can improve useful behavior. If your reward is incomplete, noisy, or hackable, the model will optimize the proxy instead of the real task. DeepMind’s write-up on specification gaming makes this point very clearly: the agent’s ingenuity is helpful only when the specification is correct. (Google DeepMind)
+27) What is reward engineering?
+Reward engineering is the design of the reward function, the verifier, the shaping terms, the penalties, and the monitoring strategy. In LLM RL, this includes deciding what counts as success, how partial progress is rewarded, what shortcuts are forbidden, and how to detect reward hacking. OpenEnv’s reward-design guide explicitly warns about reward hacking, sparse rewards, and conflicting signals as common pitfalls. (Meta-PyTorch)
+28) What is reward hacking?
+Reward hacking happens when a model finds a way to maximize the reward without actually doing the intended task. DeepMind describes this as specification gaming: the system satisfies the literal reward but not the real goal. Classic causes include poorly designed shaping rewards, missing constraints in the success condition, and simulator or verifier loopholes. (Google DeepMind)
+29) Why is sparse reward a common problem?
+If successful trajectories are too rare, the model may never get enough positive signal to improve. OpenEnv’s docs explicitly call sparse rewards a common pitfall because the agent may never find positive signal. RLVE work similarly notes that overly difficult tasks can yield consistently poor rewards and stall gradient-based learning. (Meta-PyTorch)
+30) Why can dense rewards also be dangerous?
+Dense rewards can speed up learning, but they can also create local optima and incentive misalignment. OpenEnv recommends starting simple and shaping carefully, because intermediate rewards can steer the model toward proxy behaviors. DeepMind gives the broader warning that poorly designed shaping can change the optimal policy itself rather than just helping the model reach the intended outcome faster. (Meta-PyTorch)
+________________
+
+
+Common Pitfalls in Building RL Environments
+31) What is the most common mistake when designing an RL environment?
+Making the environment easy to verify but not faithful to the real task. A verifier that checks only the final string, a regex, or a narrow success pattern may be convenient, but it often misses equivalent correct answers or allows degenerate shortcuts. Recent verifier analysis on mathematical RL found that rule-based verifiers often reject correct but differently formatted answers, while model-based verifiers can be exploited to produce false positives during RL. (arXiv)
+32) What goes wrong with weak verifiers?
+Two opposite failure modes are common. Rule-based verifiers can be too brittle and produce false negatives when the answer is correct but phrased differently. Model-based verifiers can be too permissive and produce false positives that the policy learns to exploit. The verifier study on mathematical reasoning reports both problems and shows that stronger policies make verifier weaknesses more obvious. (arXiv)
+33) Why is “just use an LLM as judge” often risky?
+Because the judge becomes part of the optimization target. If the policy can find surface patterns that fool the judge, training can inflate reward without improving real task quality. That is exactly why model-based verifiers, despite better static accuracy, can be vulnerable during RL training. Use them carefully, stress-test them, and combine them with hard checks whenever possible. (arXiv)
+34) What is a common environment-design pitfall for tool-using agents?
+Not modeling realistic failure modes. Real APIs fail because of permissions, invalid formats, missing fields, timezones, or bad parameters. Hugging Face’s OpenEnv blog highlights examples like missing OAuth scopes and bad RFC3339 datetime formatting. If the environment hides these realities, the resulting policy will be overfit to a toy setup and brittle in deployment. (Hugging Face)
+35) Why is static task difficulty a problem?
+Because the learning signal collapses at both extremes. Tasks that are too easy stop teaching the model anything useful. Tasks that are too hard yield near-zero reward and also stop teaching. RLVE was proposed largely to solve this problem by dynamically adjusting task difficulty as the policy improves. (arXiv)
+36) What is a common pitfall in environment diversity?
+Training on too few task types. Recent RLVE results argue that scaling the number of environments improves generalizable reasoning capability, and Reasoning Gym was built around procedurally generated tasks across many domains for exactly this reason. A narrow environment set often produces narrow competence and fragile transfer. (arXiv)
+37) Why do many RL environments fail to transfer to real-world performance?
+Because they optimize the wrong abstraction level. If the environment is too toy-like, omits realistic constraints, or over-simplifies tool feedback, the model may become good at the benchmark but not at the actual workflow. This is a practical version of specification gaming: the benchmark is solved, the real job is not. (Google DeepMind)
+________________
+
+
+Common Pitfalls in Reward Engineering
+38) What is the biggest reward-engineering mistake?
+Using a proxy metric as if it were the goal. Goodhart-style failures are everywhere in RL: token count, response format, test count, or intermediate progress can all become targets the model exploits. DeepMind’s examples of shaping mistakes and reward misspecification are the canonical warning here. (Google DeepMind)
+39) Should I start with a complicated reward function?
+Usually no. OpenEnv explicitly recommends starting simple, often with sparse success/failure reward, before layering in shaping terms. This makes debugging easier and reduces the chance that the model learns the wrong intermediate incentives before it learns the actual task. (Meta-PyTorch)
+40) What happens when reward components conflict?
+Learning becomes unstable or confused. OpenEnv lists conflicting signals as a common pitfall: if one term rewards brevity, another rewards verbosity, a third rewards format, and a fourth rewards exploration, the policy may oscillate or learn brittle shortcuts instead of coherent behavior. (Meta-PyTorch)
+41) Why is binary reward often appealing?
+Because it is easy to reason about and harder to game superficially. Label Studio’s RLVR overview notes that verifiable rewards are often binary and directly tied to correctness criteria, which makes evaluation simple and scalable. Binary reward is not always sufficient, but it is often a good starting point for precision-critical tasks like code and math. (Label Studio)
+42) Why is binary reward sometimes not enough?
+Because it can be too sparse, especially for long-horizon tasks. If success only happens at the very end, the model may not learn at all. That is where carefully designed shaping, step-level evaluation, or adaptive curriculum can help — but only if you can add them without creating easy-to-game shortcuts. (Meta-PyTorch)
+43) How do I know whether my reward is being hacked?
+Watch for rising reward without corresponding task-quality gains. Typical signs are strange formatting habits, repetitive surface patterns, degenerate short solutions, suspiciously high judge scores, or solutions that pass weak checks but fail stronger ones. The verifier case study is a strong reminder that static verification accuracy is not enough; you must observe what happens under optimization pressure. (arXiv)
+44) What is a safe pattern for reward engineering?
+Use layered verification. Start with hard outcome checks. Add anti-cheat constraints. Then add minimal shaping only where the sparse reward is too weak. Keep a holdout evaluator separate from the training reward when possible. This matches both OpenEnv’s “start simple, shape carefully” guidance and DeepMind’s warning about shaping altering the true objective. (Meta-PyTorch)
+________________
+
+
+Common Pitfalls in RL Post-Training Pipelines with RLVR / RLVE / GRPO
+45) What is a common mistake in GRPO training runs?
+Using RL before the base model is ready. GRPO is powerful, but it is a post-training method, not a substitute for capability. TRL’s own GRPO examples start from instruct models and task datasets rather than from weak base checkpoints. If the model almost never produces a correct rollout, the reward signal is too sparse for productive RL. (Hugging Face)
+46) Why does RL post-training plateau?
+Because the model saturates the available prompt distribution or the reward signal no longer differentiates useful improvements. RLVE explicitly frames static data saturation as a problem and shows that adaptive environments can keep learning going after conventional RLVR pipelines flatten out. (arXiv)
+47) Why can “more RL” make a model worse?
+Because optimization pressure amplifies whatever the reward favors, including undesirable shortcuts. If the verifier is noisy, if the environment is unrealistic, or if the reward overvalues superficial structure, more training can push the model deeper into those artifacts rather than improving real competence. (arXiv)
+48) What is a common pitfall in RLVR datasets?
+Finite, static datasets get stale. Once the model has mastered or overfit their distribution, additional RL yields little signal. RLVE work argues that procedurally generated environments with adjustable difficulty are one way around this limitation. Reasoning Gym makes a similar case for unlimited data generation with controllable complexity. (arXiv)
+49) Why do identical-looking GRPO runs produce different outcomes?
+Because RL is highly sensitive to rollout quality, verifier behavior, reward scaling, task mix, generation parameters, and environment bugs. Even if the trainer code is the same, small differences in reward computation or environment behavior can change optimization dynamics substantially. The verifier study is a good reminder that the reward pipeline itself is part of the model. (arXiv)
+50) What is a common pitfall when mixing many environments?
+Using an unbalanced mixture. If some environments are much easier, much denser in reward, or much shorter in trajectory length, they can dominate training and starve harder but more important environments. RLVE’s adaptive-difficulty framing exists partly to keep the training distribution informative instead of letting it collapse into easy tasks. (arXiv)
+51) Why are long-horizon tasks especially hard in RL post-training?
+Because reward arrives late and useful trajectories are rare. Long tasks need either decomposition, better intermediate signals, stronger initialization, or curriculum. Otherwise, the rollout cost is high and the success rate stays near zero. This is one reason why adaptive environments and procedural curricula are getting attention. (arXiv)
+52) What monitoring mistake do teams make most often?
+They monitor the training reward but not actual behavior. Reward alone is not enough because the reward channel can be flawed. You need sampled rollout audits, stronger offline evaluation, and held-out environments or benchmarks. The verifier case study shows why this matters: reward can rise while real quality does not. (arXiv)
+53) What is the safest way to structure an RL post-training pipeline?
+A good pattern is:
+start from a strong instruct or SFT checkpoint, use a task with a strong verifier, begin with simple reward, validate the environment thoroughly, run small-scale debug experiments, audit rollouts manually, then scale training and only later add curriculum or more shaping. This is consistent with TRL’s practical GRPO examples, OpenEnv’s reward guidance, and the lessons from verifier-failure studies. (Hugging Face)
+________________
+
+
+Practical “What should we do in a hackathon?” FAQs
+54) What kind of project is most likely to succeed in a hackathon?
+Pick a task with:
+a clear success condition,
+a verifier you trust,
+short to medium trajectory length,
+few external dependencies,
+and adjustable difficulty.
+Good examples are code repair with tests, structured extraction with schema validation, grid or puzzle games, tool-using workflows with exact state checks, and browser tasks with explicit completion criteria. These are the sweet spot for RLVR and lightweight RLVE prototypes. (Label Studio)
+55) What should we avoid building?
+Avoid tasks that are subjective, hard to verify, require massive infrastructure, or depend heavily on an LLM judge without hard backstops. Also avoid environments whose failure cases you do not understand. If you cannot explain how the reward could be hacked, you are not ready to optimize it yet. (arXiv)
+56) What is the best debugging order?
+First debug the environment manually.
+Then debug the verifier.
+Then run scripted baseline policies.
+Then run a frozen model.
+Then run a tiny RL experiment.
+Only then scale.
+This order isolates bugs early and prevents you from blaming the optimizer for what is really an environment or reward bug. It follows directly from the fact that verifier reliability is foundational in RLVR. (arXiv)
+57) What is one rule the team should remember?
+Do not optimize a reward you have not tried to break yourself first. The easiest way to avoid reward hacking is to adversarially test your environment and reward design before the model does. (Google DeepMind)
+________________
+
+
+58) Strong references for deeper learning
+For GRPO and TRL:
+* TRL GRPO Trainer docs. (Hugging Face)
+* Hugging Face GRPO cookbook. (Hugging Face)
+For RL environments and reward design:
+* OpenEnv reward design guide. (Meta-PyTorch)
+* OpenEnv tool-using environment examples. (Hugging Face)
+For pitfalls and failure modes:
+* DeepMind on specification gaming. (Google DeepMind)
+* Pitfalls of rule-based and model-based verifiers. (arXiv)
+For scalable environment-based training:
+* RLVE paper on adaptive verifiable environments. (arXiv)
+* Reasoning Gym. (OpenReview)
+
+
+Here are solid Unsloth RL post-training recipes worth checking out, with a bias toward official or close-to-official examples.
+59) Core Unsloth GRPO recipes
+Qwen2.5 (3B) GRPO notebook
+A straightforward starter recipe for GRPO with Unsloth. It covers data prep, training, inference, and saving, so it is a good baseline if you want the least opinionated end-to-end example. (GitHub)
+Llama 3.1 (8B) GRPO notebook
+Same general pattern, but on a larger model family. Useful if you want a more realistic “reasoning/capability uplift” recipe without jumping straight to very large models. (GitHub)
+Gemma 3 (1B) GRPO notebook
+A smaller-scale recipe that is easier to run and debug. Good for iterating on reward functions and rollout settings before spending more compute on larger checkpoints. (GitHub)
+59.1) Advanced Unsloth GRPO recipes
+Advanced Qwen3 (4B) GRPO notebook
+This is one of the more interesting recipes because it adds more than the bare trainer loop. Unsloth’s June 2025 discussion explicitly calls out: proximity scoring for more nuanced rewards, OpenR1 dataset support, advanced templates, and “prefinetuning to skip GRPO format learning.” That makes it a better recipe when you care about reward shaping and format bootstrapping, not just getting GRPO to run. (GitHub)
+HF LLM Course: Practical Exercise — GRPO with Unsloth
+Not an Unsloth-maintained notebook repo entry, but it is a structured learning recipe that uses Unsloth specifically to fine-tune a model with GRPO for reasoning. It is a good companion when you want a didactic walkthrough instead of just notebook cells. (Hugging Face)
+59.2) Environment / agent-style RL recipes
+GPT-OSS 20B + 2048 game RL notebook
+This is closer to “RL with an environment” than plain static-prompt RLVR. The notebook goal is explicitly to make GPT-OSS play 2048 with reinforcement learning / GRPO, which makes it a useful recipe if you want to move beyond math/code answer verification into interactive environment training. (GitHub)
+59.3) Broader recipe collection
+Unsloth notebooks repository
+The main repo currently advertises “250+ Fine-tuning & RL Notebooks,” including GRPO and reinforcement learning notebooks. If you want the widest set of recipes in one place, this is the best starting point. (GitHub)
+59.4) Useful adjacent recipes and examples
+Scheduler GRPO example using Unsloth
+A community example that trains a scheduling model with GRPO using Unsloth and QLoRA. It is useful because it shows a non-math, non-code structured-output task where rewards are tied to output format and schedule correctness. (Hugging Face)
+SFT → GRPO pipeline example
+There is a community “show and tell” example for a full SFT-then-GRPO pipeline. I would treat it as inspiration rather than an official recipe, but it is valuable if your intended workflow is “teach format first, then do RL.” (GitHub)
+59.5) What these recipes collectively cover
+Across these examples, the main recipe patterns are:
+* plain GRPO on reasoning-style tasks,
+* GRPO with better reward shaping like proximity scoring,
+* pre-SFT or preformatting before RL,
+* QLoRA-based memory-efficient RL fine-tuning,
+* and environment-style RL with game interaction. (GitHub)
+59.6) Two gaps to keep in mind
+One gap is multi-turn GRPO with stepwise rewards. There is a feature request asking for reward on each step plus a final reward, which suggests this is not yet a mature first-class recipe in Unsloth. (GitHub)
+Another gap is notebook stability across versions/hardware. Several issue threads mention breakage or edge cases in GRPO notebooks, including fast inference assumptions, VRAM growth, and vision-GRPO issues. That does not make the recipes unusable, but it does mean you should pin versions and test on a small run first. (GitHub)
+59.7) Best recipes by use case
+If you want the simplest starting point:
+* Qwen2.5 (3B) GRPO
+* Gemma 3 (1B) GRPO (GitHub)
+If you care about reward engineering:
+* Advanced Qwen3 (4B) GRPO (GitHub)
+If you care about environment-style RL:
+* GPT-OSS 20B 2048 notebook (GitHub)
+If you want the most guided learning path:
+* HF practical exercise with Unsloth + GRPO (Hugging Face)
+If helpful, I can turn this into a curated table with columns for model, task type, reward type, hardware footprint, and what each recipe teaches.
+
+
+Additional Resources:
+* OpenEnv Core (An interface library for RL post training with environments)
+   * https://github.com/meta-pytorch/OpenEnv
+* OpenEnv-PyTorch Docs
+   * https://meta-pytorch.org/OpenEnv/
+* HuggingFace OpenEnv Environments Hub
+   * https://huggingface.co/openenv
+   * https://huggingface.co/openenv/spaces
+* Tutorials to build, run and train RL environments and training pipelines
+   * https://github.com/meta-pytorch/OpenEnv/tree/main/tutorial
+   * RL Training Examples: https://github.com/meta-pytorch/OpenEnv/tree/main/tutorial/examples
+   * RL Environment Examples: https://github.com/meta-pytorch/OpenEnv/tree/main/envs
+* Few additional YT Videos on building RL Environments:
+   * https://www.youtube.com/watch?v=0airz7BhBiA
+   * https://www.youtube.com/watch?v=ap4q4sAK4OY
+   * https://www.youtube.com/watch?v=Jew4lhAiqnw (Recommended)
+Theme #1 - Multi-Agent Interactions
+Environments for this theme involve cooperation, competition, negotiation, and coalition formation. Learning from these environments will enable agents to model the beliefs and incentives of others in partially observable settings. This drives theory-of-mind reasoning and emergent strategic behavior.
+Expected Outcome: an environment that can be used to train multi-agent task handling in a LLM
+Example environments: Market simulations, compute-allocation negotiations, collaborative puzzle worlds, mixed cooperative/competitive strategy games.
+Theme #2 - (Super) Long-Horizon Planning & Instruction Following
+You will build environments that require deep, multi-step reasoning with sparse or delayed rewards. After using these environments, the goal is to enable agents to decompose goals, track state over extended trajectories, and recover from early mistakes. The aim is to push beyond shallow next-token reasoning toward structured planning and durable internal representations. 
+Expected Outcome: an environment that can capture and improve LLM behaviour on challenging long horizon tasks that need long running sessions beyond context memory limits. 
+Example environments: (Think of OpenClaw workflows with Multi-turn tasks). Research-planning simulators, large-scale codebase refactoring tasks, strategic resource management worlds, long-horizon logistics optimization, extremely complicated long-horizon instruction following (e.g., 300 instructions scattered around).
+Theme #3 - World Modeling
+#3.1 Professional Tasks
+Here you will develop environments that require real interaction with tools, APIs, or dynamic systems where the model is expected to do real hard work instead of exploiting short-cuts to arrive at the desired outcome. Learning from these environments will enable agents to maintain consistent internal state, update beliefs based on outcomes, and orchestrate multi-step workflows. The goal is to strengthen causal reasoning and persistent world models.
+Expected Outcome: an environment capturing nuances of a defined partially observable world and improve LLM interaction with it
+Example environments: Dynamic browser/API ecosystems, enterprise applications, scientific workflow loops (papers → code → experiments), economic simulations with feedback, tool-discovery benchmarks.
+
+
+#3.2 Personalized Tasks
+Here we will develop an environment that offers real personalized task handling, imagine replying to personal messages or handling dinner conflicts due to work conflicts, replying to tough emails. Think any personal assistant tasks
+
+Expected Outcome: An environment that gives the model a realistic simulation of handling personal tasks, conflicts and managing them as delegations
+
+Example environments: Executive Assistant Meeting Planner, Dinner and drive planning, email and message replying, shopping, etc
+
+
+Theme #4 - Self-Improvement
+The focus here is to create environments where agents can learn to generate new challenges, escalate difficulty, and improve through self-play or adaptive curricula. Rather than optimizing fixed tasks, the goal is for agents to learn to drive their own capability growth. The objective is recursive skill amplification.
+Expected Outcome: an environment for improving self-play of a LLM over a defined set of tasks
+Example environments: Self-play negotiation arenas, auto-generated math/proof tasks, evolving coding competitions, adaptive RL curricula.
+
+
+Theme #5: Wild Card - Impress Us!
+We do not want to limit your focus if your idea doesn’t fit the boxes above, we want and WILL reward out of box tasks, please be creative but remember to add submissions that meaningfully add value to LLM training on a certain task. 
+Guidelines for Problem Statement
+* It is NOT mandatory to choose the same problem statement as Round 1. Only choose the same problem statement if it aligns with the above provided Hackathon themes.
+* You can start working on your problem statement once you have finalized it. Post-training can be done onsite on 25th & 26th when you receive compute credits for HuggingFace.
+* Before the onsite, we suggest you work on building the environment, agent behaviours, reward model and evaluate if your work aligns with the judging criteria given below.
+
+
+
+
+Judging Criteria
+Minimum requirements: 
+* Usage of OpenEnv (latest release)
+* Show a minimal training script for your environment using Unsloth or HF TRL in Colab
+* Write a mini-blog on HuggingFace or mini-video on YouTube talking about your submission, <2 minutes
+* Your OpenEnv compliant environment should be hosted on Hugging Face Spaces.
+
+
+Judging Overview
+* Evaluation: Teams will be scored based on the following criteria:
+1. Environment Innovation (40%): Is the environment novel, creative, or challenging? Does it meaningfully test the agent’s behavior?
+2. Storytelling (30%): Does the team clearly explain the problem, environment, and agent behavior? Is the demo engaging and easy to follow?
+3. Showing Improvement in Rewards (20%): Does the demo provide observable evidence of training progress (reward curves, metrics, or before/after behavior)?
+4. Reward and Training Script/Pipeline Setup (10%): Is the reward logic coherent, and does the pipeline produce meaningful improvement in the agent’s inference (how it acts in the environment)?
+
+
+OpenEnv Hackathon - What Judges Look For
+
+
+This guide tells you what makes a strong submission for the OpenEnv Hackathon (India 2026).
+Read it before you start building, and again before you submit.
+
+
+For the list of themes and example problems, refer to the top sections.
+
+
+NOTE: Please remember only one submission per team. If you have multiple ideas, pick the best one and go for it. Please make sure that the URL link of your environment is submitted as judges will pull the environment from the URL to evaluate it. Changes or commits after the submission deadline will not be considered.
+
+
+TL;DR
+
+
+Build an environment that an LLM could actually be trained on to get measurably better at
+something interesting. Then show that training. Then tell the story.
+
+
+A messy but ambitious environment with real training evidence beats a polished but boring one.
+Pick a problem that excites you (that energy comes through in the pitch).
+
+
+Judging Criteria
+
+
+Criterion: Environment Innovation
+Weight: 40%
+What it means:
+Is the environment novel, creative, or genuinely challenging?
+Does it meaningfully test agent behavior in a way that hasn't been done before?
+	
+
+Criterion: Storytelling & Presentation
+Weight: 30%
+What it means:
+Can you clearly explain the problem, the environment, and what the agent learned?
+Is the demo engaging and easy to follow for a non-technical audience?
+	
+
+Criterion: Showing Improvement in Rewards
+Weight: 20%
+What it means:
+Is there observable evidence of training progress? Reward curves, before/after behavior,
+comparison against a baseline -- anything that proves the agent learned something.
+	
+
+Criterion: Reward & Training Pipeline
+Weight: 10%
+What it means:
+Is the reward logic coherent? Does the pipeline produce meaningful improvement in the trained
+agent's behavior?
+	
+
+Minimum Submission Requirements
+
+
+NOTE: These are non-negotiable. Submissions missing any of these are at a serious disadvantage.
+* Use OpenEnv (latest release). Build on top of the framework; don’t reinvent the wheel.
+* A working training script using Unsloth or Hugging Face TRL, ideally as a Colab notebook so judges can re-run it.
+* Evidence that you actually trained; at minimum, loss and reward plots from a real run.
+* A short writeup: a mini-blog on Hugging Face or a < 2 minute video on YouTube explaining what your environment does and what you trained, or a short slide deck of presentation. Please make sure that all materials are linked from your README file so that judges can access them easily.
+* Push your environment to a Hugging Face Space so it’s discoverable and runnable.
+* A README that motivates the problem, explains how the env works, and shows results.
+   * README should have a link to the environment in the Hugging Face Space. It should also have all additional references to other materials (e.g. videos, blog posts, slides, presentations, etc.) that you want to include.
+* Please do not include big video files in your Env submission on HF Hub as we would like to have a small size for each env (Please use url as reference link to additional materials).
+
+
+What Makes a Submission Stand Out
+
+
+Pick an ambitious, original problem
+The themes (problems) are deliberately open. Use them as launching pads, not boxes. Judges have seen a lot of chess, snake, tic-tac-toe, and grid-world clones. To score well on innovation,
+you need a genuinely fresh angle. Some questions to ask yourself:
+* Does this environment exist to teach an LLM something it currently can’t do well?
+* Is the domain underexplored in RL/LLM training?
+* Could a researcher write a paper about training on this?
+
+
+Design a reward signal that actually teaches
+A great environment has a reward function that:
+* Provides a rich, informative signal (not just 0/1 at the end)
+* Captures something hard to measure in a clever way
+* Uses OpenEnv’s Rubric system thoughtfully (composable rubrics > monolithic scoring)
+* Is hard to game; an agent that exploits the reward without solving the task should not get high scores
+
+
+Show real training, end to end
+The bar isn’t “training script exists.” The bar is “training script runs against the environment, the
+agent learns, and you can show it.” Concretely:
+* Your training loop should connect to your environment (not a static dataset)
+* Train long enough that the curves mean something
+* Compare a trained agent vs. a random/untrained baseline; quantitative and/or qualitative
+* Include the plots and numbers in your README and writeup
+
+
+Make your plots readable
+Reviewers spend seconds, not minutes, on each plot. Help them out:
+* Label both axes (e.g. “training step” / “episode” on x, “reward” / “loss” on y) and include units where they apply
+* Save plots as .png or .jpg and commit them to the repo (don’t leave them only in a Colab cell or a deleted Wandb run) (if you ran via Wandb, please include the link to that specific run of your plots)
+* Embed the key plots in your README with a one-line caption explaining what each one shows If you have multiple runs (baseline vs. trained, ablations, etc.), put them on the same axes so the comparison is obvious
+
+
+Tell a story, not an API doc
+Your README, blog, and pitch should answer:
+1. Problem) what capability gap or interesting domain are you targeting?
+2. Environment) what does the agent see, do, and get rewarded for?
+3. Results) what changed after training? Show it.
+4. Why does it matter) who would care, and why?
+
+
+A reviewer should be able to read your README in 3~5 minutes and want to try your
+environment.
+
+
+NOTE: If you have a video, HF post, or anything else interesting, please make sure that it’s linked
+  from your README as a link.
+
+
+Engineer it cleanly (table stakes)
+Engineering quality matters less than ambition, but sloppy work hurts. Make sure you:
+* Use OpenEnv’s Environment / MCPEnvironment base classes properly
+* Respect the client / server separation (clients should never import server internals)
+* Follow the standard Gym-style API (reset, step, state)
+* Have a valid openenv.yaml manifest
+* Don’t use reserved tool names (reset, step, state, close) for MCP tools
+
+
+Final Note
+
+
+Judges are looking for environments that push the frontier of what we can train LLMs to do. Be
+ambitious. Pick a problem you find genuinely interesting; that almost always produces better
+work than chasing what you think judges want. Good luck.
+
+
+
+
+Who are the mentors and judges for the finale?
+We are proud to share the full list of mentors and judges who will be part of the in-person finale:
+* Sanyam Bhutani, Partner Engineer at Meta
+* Yash Khare, Partner Engineer at Meta
+* Nilesh Pandey, Partner Engineer at Meta
+* Adithya S Kolavi, ML Engineer at Hugging Face
+* Adarsh Shirawalmath, ML Engineer at Hugging Face
+* Arkadip Maitra, ML Engineer at Red Hat
+* Aashay Sachdeva, Founding Team at Sarvam
+* Deepa Dhevannan, Gen AI Solutions Architect
+* Soumik Rakshit, ML Engineer at Zomato
+* Ayush Satyam, Systems ML Engineer, Red Hat
+* Parshant Sharma, Machine Learning Engineer at Red Hat
+
+Teacher's Recommendations:
+q) how """
+Variant cross-referencing is indeed a challenge in the genetic testing stage, but most of the delay happens before anyone even orders the right test 
+because doctors simply are not considering a "rare disease" in the first place! """
+q) how """
+Most rare disease patients wait an average of 4–6 years for a correct diagnosis, often consulting a dozen specialists along the way and 60% being told they have something else entirely. Despite sustained clinical effort, diagnosis remains challenging as 7,000 rare diseases are far beyond any individual clinician's ability to reasonably remember/ process. """
+q) The 'teacher' is really 'experimental'... Automated curriculum generation is an active research area, but getting a second model to reliably identify meaningful weak spots, rather than just generate noise or trivially hard cases, is genuinely hard. It would be better not to claim this as "solved" but more like work in progress (when you present). 
+q) Honestly, Qwen 1.5B is too small a model to get 'good' results. Training a small model and to demonstrate measurable improvement from a low baseline is a legitimate research contribution. 
+But you should frame it as a proof-of-concept for the training methodology/ pipeline and not as a clinically deployable system. The honest claim is: "can this approach move the needle even on a constrained model?"
+q) Graph traversal versus true reasoning is a conceptual tension worth addressing. Navigating human phenotype ontological connections is closer to structured search than the open-ended clinical reasoning a doctor does. 
+Real rare disease diagnosis often requires integrating family history, ambiguous symptom timelines, and negative findings, none of which map cleanly onto graph edges. This is just a word of caution only - 'search rather than clinical reasoning' is absolutely fine for a hackathon/ developing a proof of concept. 
+i have 5 set of questions think deeply whether this existing solution follow them also how these 5 issues will effect us look into research as well .these 5 are pitfalls my prof told me about dont try to please me we need to repair the damage
