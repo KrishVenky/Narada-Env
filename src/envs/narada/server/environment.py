@@ -25,15 +25,24 @@ from ..models import (
 
 logger = logging.getLogger(__name__)
 
-# Validator requires scores strictly between 0 and 1 (exclusive)
+# Validator requires returned scores strictly between 0 and 1 (exclusive).
+# Internally we keep signed raw rewards so penalties stay meaningful.
 _SCORE_MIN = 0.01
 _SCORE_MAX = 0.99
+_RAW_SCORE_SCALE = 0.45
 
 
-def _clamp(value: float, default: float = 0.5) -> float:
+def _clamp_score(value: float, default: float = 0.5) -> float:
     if not math.isfinite(value):
         return default
     return float(max(_SCORE_MIN, min(_SCORE_MAX, value)))
+
+
+def _to_score(raw_reward: float, default: float = 0.5) -> float:
+    """Map signed raw reward to OpenEnv's required score interval."""
+    if not math.isfinite(raw_reward):
+        return default
+    return _clamp_score(0.5 + raw_reward * _RAW_SCORE_SCALE, default=default)
 
 
 # ── Step-level reward constants ───────────────────────────────────────────────
@@ -45,9 +54,9 @@ R_LAB_PENALTY = -0.10
 R_BACKTRACK_RECOVERY = 0.05
 
 R_TERMINAL_CORRECT = 1.0
-R_TERMINAL_PARTIAL = 0.5      # per-variant in oligogenic
+R_TERMINAL_PARTIAL = 0.5      # non-terminal bonus per correct oligogenic flag
 R_TERMINAL_WRONG = -0.5
-R_TIMING_BONUS = 0.2          # correct flag before step 10
+R_TIMING_BONUS = 0.2          # correct flag before the tier's early-step cutoff
 
 OVERSEER_MIN = 0.0
 OVERSEER_MAX = 0.3
@@ -74,6 +83,7 @@ class NaradaEnvironment:
 
         # Reward tracking
         self._step_rewards: List[float] = []
+        self._raw_cumulative_reward: float = 0.0
         self._cumulative_reward: float = 0.0
 
         # Flagging state
@@ -101,6 +111,7 @@ class NaradaEnvironment:
         self._trail_set = {self._current_node_id}
 
         self._step_rewards = []
+        self._raw_cumulative_reward = 0.0
         self._cumulative_reward = 0.0
         self._flagged_allele_ids = []
         self._hallucinated_hops = 0
@@ -112,8 +123,17 @@ class NaradaEnvironment:
             self._case.disease_name, self._case.causal_genes,
         )
 
-        obs = self._build_observation(step_reward=0.0)
-        return StepResult(observation=obs, reward=0.0, done=False, info={"episode_id": self._episode_id})
+        # Reset itself has no reward signal; use the neutral 0.5 score so the
+        # value stays strictly within the (0.01, 0.99) range OpenEnv requires
+        # for every StepResult.
+        neutral_score = _to_score(0.0)
+        obs = self._build_observation(step_reward=neutral_score)
+        return StepResult(
+            observation=obs,
+            reward=neutral_score,
+            done=False,
+            info={"episode_id": self._episode_id},
+        )
 
     def step(self, action: NaradaAction) -> StepResult:
         if self._done:
@@ -125,7 +145,7 @@ class NaradaEnvironment:
         if action.reasoning:
             self._reasoning_log.append(action.reasoning[:200])
 
-        # Route to action handler
+        # Route to action handler. Values are signed raw rewards until returned.
         step_reward, terminal_reward, terminal = self._dispatch_action(action)
 
         # Per-step efficiency penalty
@@ -136,24 +156,28 @@ class NaradaEnvironment:
             terminal = True
             terminal_reward = self._compute_terminal_reward()
 
-        step_reward = _clamp(step_reward)
-        self._step_rewards.append(step_reward)
-        self._cumulative_reward = _clamp(
-            self._cumulative_reward + step_reward * 0.05
-        )
+        step_score = _to_score(step_reward)
+        self._step_rewards.append(step_score)
+        self._raw_cumulative_reward += step_reward
+        # Expose a true running mean of the per-step OpenEnv scores. This is
+        # what an agent can reason about monotonically; it is NOT the mapped
+        # sum of raw rewards (that would be misleading).
+        self._cumulative_reward = sum(self._step_rewards) / len(self._step_rewards)
 
         if terminal:
-            overseer_score = self._overseer_score()
-            final_reward = _clamp(terminal_reward + overseer_score)
+            # Only successful terminal outcomes receive overseer shaping.
+            # Wrong flags and timeouts must remain clearly worse than neutral.
+            overseer_score = self._overseer_score() if terminal_reward > 0 else 0.0
+            final_reward = _to_score(terminal_reward + overseer_score)
             self._done = True
         else:
-            final_reward = step_reward
+            final_reward = step_score
 
-        obs = self._build_observation(step_reward=step_reward)
+        obs = self._build_observation(step_reward=step_score)
 
         return StepResult(
             observation=obs,
-            reward=final_reward if terminal else step_reward,
+            reward=final_reward if terminal else step_score,
             done=self._done,
             info={
                 "episode_id": self._episode_id,
@@ -172,7 +196,10 @@ class NaradaEnvironment:
             cumulative_reward=self._cumulative_reward,
             done=self._done,
             flagged_variants=[f"VAR:{aid}" for aid in self._flagged_allele_ids],
-            ground_truth_variants=self._case.ground_truth_variant_ids if self._case else [],
+            ground_truth_variants=(
+                self._case.ground_truth_variant_ids
+                if self._case and self._done else []
+            ),
         )
 
     # ── Action dispatch ───────────────────────────────────────────────────────
@@ -187,8 +214,7 @@ class NaradaEnvironment:
             return self._action_hop(action.node_id or ""), 0.0, False
 
         if atype == "flag_causal":
-            step_r, term_r = self._action_flag(action.variant_id or "")
-            return step_r, term_r, True
+            return self._action_flag(action.variant_id or "")
 
         if atype == "request_lab":
             return R_LAB_PENALTY, 0.0, False
@@ -204,7 +230,7 @@ class NaradaEnvironment:
 
     def _action_hop(self, target_node_id: str) -> float:
         if not target_node_id:
-            return _clamp(R_IRRELEVANT_HOP)
+            return R_IRRELEVANT_HOP
 
         neighbors = self._graph.get_neighbors(self._current_node_id)
 
@@ -212,7 +238,7 @@ class NaradaEnvironment:
         if target_node_id not in neighbors:
             if target_node_id in self._graph.nodes:
                 self._hallucinated_hops += 1
-            return _clamp(R_IRRELEVANT_HOP - 0.05)
+            return R_IRRELEVANT_HOP - 0.05
 
         self._current_node_id = target_node_id
         if target_node_id not in self._trail_set:
@@ -221,11 +247,11 @@ class NaradaEnvironment:
 
         # Relevance reward
         is_relevant = target_node_id in self._case.relevant_node_ids
-        return _clamp(R_RELEVANT_HOP if is_relevant else R_IRRELEVANT_HOP)
+        return R_RELEVANT_HOP if is_relevant else R_IRRELEVANT_HOP
 
     def _action_backtrack(self) -> float:
         if len(self._trail) < 2:
-            return _clamp(R_IRRELEVANT_HOP)
+            return R_IRRELEVANT_HOP
 
         # Reward backtrack only if last hop was irrelevant
         prev_node = self._current_node_id
@@ -233,10 +259,10 @@ class NaradaEnvironment:
         self._current_node_id = self._trail[-1]
 
         was_irrelevant = prev_node not in self._case.relevant_node_ids
-        return _clamp(R_BACKTRACK_RECOVERY if was_irrelevant else R_IRRELEVANT_HOP)
+        return R_BACKTRACK_RECOVERY if was_irrelevant else R_IRRELEVANT_HOP
 
-    def _action_flag(self, variant_id: str) -> tuple[float, float]:
-        """Returns (step_reward, terminal_reward)."""
+    def _action_flag(self, variant_id: str) -> tuple[float, float, bool]:
+        """Returns (step_reward, terminal_reward, is_terminal)."""
         case = self._case
 
         # Parse allele_id from variant_id (format: "VAR:12345")
@@ -245,11 +271,26 @@ class NaradaEnvironment:
         # Check if variant is in candidate list at all
         candidate_ids = {v.allele_id for v in case.candidate_variants}
         if allele_id not in candidate_ids:
-            return _clamp(R_TERMINAL_WRONG), _clamp(R_TERMINAL_WRONG)
+            return R_TERMINAL_WRONG, R_TERMINAL_WRONG, True
+
+        if allele_id in self._flagged_allele_ids:
+            return R_IRRELEVANT_HOP, 0.0, False
 
         self._flagged_allele_ids.append(allele_id)
+
+        if case.task_type == "oligogenic":
+            ground_truth = set(case.causal_allele_ids)
+            flagged = set(self._flagged_allele_ids)
+            if allele_id not in ground_truth:
+                return R_TERMINAL_WRONG, R_TERMINAL_WRONG, True
+            if ground_truth.issubset(flagged):
+                terminal_reward = self._compute_terminal_reward()
+                return R_TERMINAL_PARTIAL, terminal_reward, True
+            progress_reward = R_TERMINAL_PARTIAL / max(1, len(ground_truth))
+            return progress_reward, 0.0, False
+
         terminal_reward = self._compute_terminal_reward()
-        return _clamp(terminal_reward * 0.1), _clamp(terminal_reward)
+        return terminal_reward * 0.1, terminal_reward, True
 
     # ── Terminal reward ────────────────────────────────────────────────────────
 
@@ -260,8 +301,8 @@ class NaradaEnvironment:
 
         if not flagged:
             # Timed out without flagging — partial credit based on graph exploration
-            exploration_bonus = min(0.3, len(self._trail_set) / max(1, self._max_steps) * 0.5)
-            return _clamp(exploration_bonus)
+            exploration_bonus = min(0.2, len(self._trail_set) / max(1, self._max_steps) * 0.25)
+            return -0.25 + exploration_bonus
 
         # Check for decoy flag (phenotype_mismatch task)
         decoy_gene = case.decoy_gene
@@ -271,7 +312,7 @@ class NaradaEnvironment:
                 for v in self._graph.get_variants_for_gene(decoy_gene)
             }
             if flagged & decoy_allele_ids:
-                return _clamp(R_TERMINAL_WRONG)  # Flagged the decoy — maximum penalty
+                return R_TERMINAL_WRONG  # Flagged the decoy — maximum penalty
 
         correct = flagged & ground_truth
         wrong = flagged - ground_truth
@@ -282,24 +323,28 @@ class NaradaEnvironment:
                 if wrong:
                     base -= 0.3 * len(wrong)
                 timing_bonus = R_TIMING_BONUS if self._step < 10 else 0.0
-                return _clamp(base + timing_bonus)
-            return _clamp(R_TERMINAL_WRONG)
+                return base + timing_bonus
+            return R_TERMINAL_WRONG
 
         if case.task_type == "oligogenic":
             n_correct = len(correct)
             n_total = len(ground_truth)
-            partial = (n_correct / n_total) * R_TERMINAL_PARTIAL if n_total > 0 else 0.0
+            # Scale oligogenic reward to the same 1.0 ceiling as monogenic so a
+            # fully correct diagnosis is not penalised by the tier. Partial
+            # credit remains linear in coverage.
+            coverage = (n_correct / n_total) if n_total > 0 else 0.0
+            partial = coverage * R_TERMINAL_CORRECT
             wrong_penalty = 0.2 * len(wrong)
             timing_bonus = R_TIMING_BONUS if (self._step < 15 and n_correct == n_total) else 0.0
-            return _clamp(partial - wrong_penalty + timing_bonus)
+            return partial - wrong_penalty + timing_bonus
 
         if case.task_type == "phenotype_mismatch":
             if correct:
                 timing_bonus = R_TIMING_BONUS if self._step < 12 else 0.0
-                return _clamp(R_TERMINAL_CORRECT + timing_bonus)
-            return _clamp(R_TERMINAL_WRONG)
+                return R_TERMINAL_CORRECT + timing_bonus
+            return R_TERMINAL_WRONG
 
-        return _clamp(0.0)
+        return 0.0
 
     # ── Overseer ──────────────────────────────────────────────────────────────
 
@@ -311,23 +356,23 @@ class NaradaEnvironment:
         """
         score = OVERSEER_MAX
 
-        # Penalise hallucinated hops
+        # Penalise hallucinated hops.
         score -= self._hallucinated_hops * 0.05
 
-        # Penalise very short exploration (< 3 unique nodes = no reasoning)
+        # Penalise very short exploration (< 3 unique nodes = no reasoning).
         unique_visited = len(self._trail_set)
         if unique_visited < 3:
             score -= 0.1
 
-        # Reward consistent path: visited causal gene node or its pathway
+        # Reward visiting each causal gene (oligogenic rewards both, capped).
         case = self._case
+        gene_bonus = 0.0
         for gene in case.causal_genes:
-            gene_id = f"GENE:{gene}"
-            if gene_id in self._trail_set:
-                score += 0.05
-                break
+            if f"GENE:{gene}" in self._trail_set:
+                gene_bonus += 0.05
+        score += min(0.10, gene_bonus)
 
-        return _clamp(min(OVERSEER_MAX, max(OVERSEER_MIN, score)), default=0.1)
+        return min(OVERSEER_MAX, max(OVERSEER_MIN, score))
 
     # ── Observation builder ───────────────────────────────────────────────────
 
@@ -339,12 +384,14 @@ class NaradaEnvironment:
         trail_nodes = [self._node_to_model(nid) for nid in self._trail[-10:]]  # last 10
 
         info: Dict[str, Any] = {
-            "disease_name": case.disease_name,
             "task_type": case.task_type,
             "episode_id": self._episode_id,
+            "flagged_variants": [f"VAR:{aid}" for aid in self._flagged_allele_ids],
         }
         if self._done:
+            info["disease_name"] = case.disease_name
             info["ground_truth_hint"] = case.causal_genes  # revealed post-episode
+            info["ground_truth_variants"] = case.ground_truth_variant_ids
 
         return NaradaObservation(
             step=self._step,

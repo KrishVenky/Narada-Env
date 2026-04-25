@@ -12,7 +12,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY --chown=user src/ ./src/
 COPY --chown=user data/hp.obo ./data/
 COPY --chown=user data/clinvar_pathogenic.tsv ./data/
-COPY --chown=user server/ ./server/
 
 ENV PYTHONPATH="/app/src/envs:${PYTHONPATH}"
 ENV PORT=7860

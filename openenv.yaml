@@ -5,9 +5,9 @@ description: >
   (ClinVar + HPO) to diagnose rare disease patients. The agent must cross-reference
   patient phenotypes against candidate variants, follow causal chains across the
   graph, and resist high-pathogenicity decoy variants unrelated to the patient's
-  phenotype. Self-improving via adversarial case generation targeting agent failure
-  patterns. Three task tiers: monogenic (easy), oligogenic (medium),
-  phenotype_mismatch (hard).
+  phenotype. Three task tiers: monogenic (easy), oligogenic (medium),
+  phenotype_mismatch (hard). Adversarial curriculum generation is documented as
+  future work, not part of the current scored environment.
 author: KrishVenky
 license: MIT
 sdk: docker
@@ -18,8 +18,7 @@ tags:
   - graph-navigation
   - rl
   - llm-agent
-  - multi-agent
-  - self-improvement
+  - robustness
 python_package: src/envs/narada
 entry_point: narada.server.app:app
 hardware: cpu-basic
@@ -36,17 +35,17 @@ tasks:
       Single causal pathogenic variant. 3-4 HPO phenotype terms. Graph path
       is 4-8 hops. Minimal distractors. Tests basic directional reasoning:
       follow phenotype → disease → gene → variant chain.
-    grader: correct_flag * timing_bonus + overseer_score
+    grader: signed_raw_reward mapped to OpenEnv score; correct_flag + timing_bonus + overseer_score
     reward_range: [0.01, 0.99]
   - id: oligogenic
     difficulty: medium
     max_steps: 25
     description: >
-      2-3 contributing variants across different genes. 5-7 phenotype terms
-      spanning two organ systems. Agent must find all variants within the step
-      budget. Tests multi-objective tracking across long trajectories and
-      holding multiple simultaneous hypotheses.
-    grader: partial_credit_per_variant + timing_bonus + overseer_score
+      2 contributing variants, one per gene, across different genes. 5-7
+      phenotype terms spanning two organ systems. Agent must find all variants
+      within the step budget. Tests multi-objective tracking across long
+      trajectories and holding multiple simultaneous hypotheses.
+    grader: signed_raw_reward mapped to OpenEnv score; partial_credit_per_variant + timing_bonus + overseer_score
     reward_range: [0.01, 0.99]
   - id: phenotype_mismatch
     difficulty: hard
@@ -58,7 +57,7 @@ tasks:
       lower-pathogenicity gene specific to the presenting phenotype.
       Tests causal discipline: resist the highest-salience signal when it
       is phenotypically irrelevant. Most untrained LLMs fail this task.
-    grader: cardiac_flag * 1.0 - decoy_flag * 0.5 + overseer_score
+    grader: signed_raw_reward mapped to OpenEnv score; cardiac_flag * 1.0 - decoy_flag * 0.5 + overseer_score
     reward_range: [0.01, 0.99]
 observation_space:
   type: object
@@ -70,6 +69,8 @@ observation_space:
     trail: list[GraphNode]
     patient_phenotypes: list[string]
     phenotype_names: list[string]
+    phenotypes_absent: list[string]
+    phenotype_absent_names: list[string]
     candidate_variants: list[Variant]
     step_reward: float
     cumulative_reward: float

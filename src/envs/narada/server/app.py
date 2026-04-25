@@ -7,6 +7,7 @@ WORKERS=1 is mandatory — sessions are in-memory per WebSocket connection.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -84,6 +85,12 @@ async def schema() -> Dict[str, Any]:
 
 @app.post("/mcp")
 async def mcp(request: Request) -> JSONResponse:
+    """Minimal MCP-style JSON-RPC bridge over the shared HTTP debug env.
+
+    Advertised tools proxy to /reset, /step, /state using the same in-memory
+    environment. Primary transport is still the WebSocket endpoint; this exists
+    so MCP clients can poke the env without needing a WS session.
+    """
     try:
         body = await request.json()
     except Exception:
@@ -91,18 +98,75 @@ async def mcp(request: Request) -> JSONResponse:
     method = body.get("method", "")
     req_id = body.get("id", 1)
 
+    tools = [
+        {
+            "name": "narada_reset_episode",
+            "description": "Reset the environment and start a new episode.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "task_type": {
+                        "type": "string",
+                        "enum": ["monogenic", "oligogenic", "phenotype_mismatch"],
+                    },
+                    "seed": {"type": "integer"},
+                },
+            },
+        },
+        {
+            "name": "narada_step_action",
+            "description": "Take an action in the environment.",
+            "inputSchema": NaradaAction.model_json_schema(),
+        },
+        {
+            "name": "narada_get_state",
+            "description": "Return the current episode state (ground truth only when done).",
+            "inputSchema": {"type": "object"},
+        },
+    ]
+
+    async def _tool_result(payload: Any) -> Dict[str, Any]:
+        return {"content": [{"type": "text", "text": json.dumps(payload, default=str)}]}
+
     if method == "tools/list":
-        result = {
-            "tools": [
-                {"name": "reset", "description": "Reset the environment and start a new episode"},
-                {"name": "step", "description": "Take an action in the environment"},
-                {"name": "state", "description": "Get current episode state"},
-            ]
-        }
+        result: Dict[str, Any] = {"tools": tools}
     elif method == "tools/call":
-        result = {"content": [{"type": "text", "text": "Use /reset, /step, /state HTTP endpoints"}]}
+        params = body.get("params") or {}
+        name = params.get("name", "")
+        args = params.get("arguments", {}) or {}
+        async with _http_lock:
+            try:
+                if name == "narada_reset_episode":
+                    step = _http_env.reset(
+                        task_type=args.get("task_type") or "monogenic",
+                        seed=args.get("seed"),
+                    )
+                    result = await _tool_result(step.model_dump())
+                elif name == "narada_step_action":
+                    action = NaradaAction.model_validate(args)
+                    step = _http_env.step(action)
+                    result = await _tool_result(step.model_dump())
+                elif name == "narada_get_state":
+                    state = _http_env.state()
+                    result = await _tool_result(state.model_dump())
+                else:
+                    return JSONResponse(
+                        {
+                            "jsonrpc": "2.0",
+                            "error": {"code": -32601, "message": f"Unknown tool: {name}"},
+                            "id": req_id,
+                        }
+                    )
+            except Exception as e:
+                return JSONResponse(
+                    {
+                        "jsonrpc": "2.0",
+                        "error": {"code": -32000, "message": str(e)},
+                        "id": req_id,
+                    }
+                )
     else:
-        result = {"name": "narada", "version": "1.0.0"}
+        result = {"name": "narada", "version": "1.0.0", "tools": [t["name"] for t in tools]}
 
     return JSONResponse({"jsonrpc": "2.0", "result": result, "id": req_id})
 
@@ -187,27 +251,31 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             pass
 
 
-# ── HTTP debug endpoints (stateless, not for concurrent use) ─────────────────
+# ── HTTP debug endpoints ──────────────────────────────────────────────────────
 
 _http_env = NaradaEnvironment()
+_http_lock = asyncio.Lock()
 
 
 @app.post("/reset", response_model=StepResult)
 async def http_reset(task_type: Optional[str] = None, seed: Optional[int] = None) -> StepResult:
-    return _http_env.reset(task_type=task_type or "monogenic", seed=seed)
+    async with _http_lock:
+        return _http_env.reset(task_type=task_type or "monogenic", seed=seed)
 
 
 @app.post("/step", response_model=StepResult)
 async def http_step(action: NaradaAction) -> StepResult:
-    try:
-        return _http_env.step(action)
-    except RuntimeError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    async with _http_lock:
+        try:
+            return _http_env.step(action)
+        except RuntimeError as e:
+            raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.get("/state", response_model=NaradaState)
 async def http_state() -> NaradaState:
-    return _http_env.state()
+    async with _http_lock:
+        return _http_env.state()
 
 
 # ── Web UI ────────────────────────────────────────────────────────────────────
@@ -265,7 +333,7 @@ _WEB_UI = """<!DOCTYPE html>
   <div class="controls">
     <select id="task-sel">
       <option value="monogenic">monogenic — Easy (single gene)</option>
-      <option value="oligogenic">oligogenic — Medium (2-3 genes)</option>
+      <option value="oligogenic">oligogenic — Medium (2 genes)</option>
       <option value="phenotype_mismatch">phenotype_mismatch — Hard (resist decoy)</option>
     </select>
     <button onclick="doReset()">RESET</button>
@@ -377,8 +445,18 @@ async def web_ui() -> HTMLResponse:
 def main() -> None:
     port = int(os.environ.get("PORT", 7860))
     host = os.environ.get("HOST", "0.0.0.0")
-    workers = int(os.environ.get("WORKERS", 1))
-    uvicorn.run("narada.server.app:app", host=host, port=port, workers=workers)
+    # Multiple workers would duplicate the in-memory graph and split sessions
+    # across processes, so the shared `_http_env` and WebSocket sessions would
+    # see different episodes. Pin to 1 worker and warn if the env tries to
+    # override it.
+    workers_env = int(os.environ.get("WORKERS", 1))
+    if workers_env != 1:
+        logger.warning(
+            "WORKERS=%d ignored; Narada requires a single worker for session "
+            "and graph consistency.",
+            workers_env,
+        )
+    uvicorn.run("narada.server.app:app", host=host, port=port, workers=1)
 
 
 # Keep run() as an alias so existing callers still work

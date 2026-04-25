@@ -228,6 +228,7 @@ async def run_episode(task_type: str) -> None:
     steps_taken = 0
     score = 0.5
     success = False
+    terminal_reached = False
 
     print(f"[START] task={task_type} env=narada model={MODEL_NAME}", flush=True)
 
@@ -236,7 +237,9 @@ async def run_episode(task_type: str) -> None:
             result = await env.reset(task_type=task_type)
             obs = result.observation
 
-            max_steps = MAX_STEPS_OVERRIDE or obs.max_steps
+            # Never exceed the server's per-task limit — stepping after a
+            # terminal observation would raise on the server.
+            max_steps = min(obs.max_steps, MAX_STEPS_OVERRIDE or obs.max_steps)
             conversation: List[Dict[str, Any]] = [{"role": "system", "content": SYSTEM_PROMPT}]
 
             while not obs.done and steps_taken < max_steps:
@@ -269,6 +272,9 @@ async def run_episode(task_type: str) -> None:
                     result = await asyncio.wait_for(env.step(action), timeout=30.0)
                 except asyncio.TimeoutError:
                     error_str = "timeout"
+                    # Transport failure: do not credit any reward and fail the run.
+                    score = 0.01
+                    success = False
                     step_rewards.append(0.01)
                     print(
                         f"[STEP] step={steps_taken} action={action_to_str(action)} "
@@ -278,6 +284,9 @@ async def run_episode(task_type: str) -> None:
                     break
                 except ConnectionClosed as e:
                     error_str = f"ws_closed:{e.code}"
+                    # Transport failure: do not credit any reward and fail the run.
+                    score = 0.01
+                    success = False
                     step_rewards.append(0.01)
                     print(
                         f"[STEP] step={steps_taken} action={action_to_str(action)} "
@@ -299,12 +308,34 @@ async def run_episode(task_type: str) -> None:
                 )
 
                 if obs.done:
+                    terminal_reached = True
                     score = clamp_open_score(result.reward)
-                    success = score > 0.5
+                    # Success thresholds per task. Raw -> OpenEnv score mapping
+                    # is score = 0.5 + raw * 0.45, clamped to (0.01, 0.99):
+                    #   monogenic/mismatch correct  = 1.0 raw  -> 0.95 score
+                    #     + timing bonus (+0.2)     = 1.2 raw  -> clamped 0.99
+                    #     + overseer (up to +0.3)   = 1.5 raw  -> clamped 0.99
+                    #   oligogenic full coverage    = 1.0 raw  -> 0.95 score
+                    #     partial (half coverage)   = 0.5 raw  -> 0.725
+                    #   wrong flag                  = -0.5 raw -> 0.275
+                    #   timeout                     ~= 0.0 raw -> 0.5
+                    # Thresholds sit just above the wrong/timeout band.
+                    thresholds = {
+                        "monogenic": 0.70,
+                        "oligogenic": 0.60,   # allow partial-credit runs
+                        "phenotype_mismatch": 0.70,
+                    }
+                    success = score > thresholds.get(task_type, 0.70)
                     break
+
+            if not terminal_reached and score == 0.5:
+                # Episode ran out of steps without a terminal flag.
+                success = False
 
     except Exception as e:
         error_msg = str(e).replace("\n", " ")[:100]
+        score = 0.01
+        success = False
         print(
             f"[STEP] step={steps_taken} action=error reward=0.01 done=false error={error_msg}",
             flush=True,

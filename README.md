@@ -42,12 +42,12 @@ A **reinforcement learning environment** where an LLM agent navigates a 55,000-n
 | Task | Description | Key Challenge |
 |---|---|---|
 | `monogenic` | Single causal gene, 3–4 phenotypes | Basic directional reasoning |
-| `oligogenic` | 2–3 causal genes, 5–7 phenotypes | Multi-objective tracking across long trajectory |
+| `oligogenic` | 2 causal genes (one variant each), 5–7 phenotypes | Multi-objective tracking across long trajectory |
 | `phenotype_mismatch` | Cardiac patient + BRCA1 frameshift decoy | Causal discipline — resist the highest-salience wrong signal |
 
 **Three-agent system:**
 - **Detective (Qwen3-1.7B, trainable)** — navigates the graph, flags the causal variant
-- **Overseer** — evaluates reasoning quality, penalises hallucinated hops
+- **Overseer** — local heuristic (no LLM) that scores trajectory quality: penalises hallucinated hops, rewards touching the causal gene, and scales with a concise trail. Added only to *successful* terminal rewards.
 - **Adversary** *(planned)* — curriculum case generation targeting Detective failure patterns; reliable adversarial curriculum from agent error logs is an open research problem, deferred to future work
 
 ---
@@ -78,12 +78,12 @@ Built at runtime from:
 | Action | Effect | Reward |
 |---|---|---|
 | `hop(node_id)` | Move to connected node | +0.15 relevant / −0.05 irrelevant |
-| `flag_causal(variant_id)` | Declare diagnosis (terminal) | +1.0 correct, −0.5 wrong |
+| `flag_causal(variant_id)` | Declare diagnosis; oligogenic cases allow multiple flags | +1.0 correct terminal, −0.5 wrong |
 | `backtrack()` | Return to previous node | +0.05 after wrong direction |
 | `request_lab(test)` | Get additional phenotype data | −0.10 penalty |
 | `summarise_trail()` | Compressed visit summary | 0.0 (neutral) |
 
-All scores are clamped to `(0.01, 0.99)`.
+Signed raw rewards are mapped into OpenEnv's required score interval `(0.01, 0.99)`. This preserves penalties while keeping the validator-compatible output range.
 
 ---
 
@@ -132,7 +132,8 @@ Pull requests welcome. To add a new task tier, reward component, or agent varian
 
 | File | Purpose |
 |---|---|
-| `src/envs/narada/environment.py` | Core RL loop, reward computation |
+| `src/envs/narada/server/environment.py` | Core RL loop, reward computation |
+| `src/envs/narada/server/app.py` | FastAPI entry point (WebSocket + HTTP debug) |
 | `src/envs/narada/graph.py` | Knowledge graph build + singleton |
 | `src/envs/narada/case_generator.py` | Patient case generation per tier |
 | `src/envs/narada/models.py` | Pydantic schemas (action/observation/state) |
@@ -155,6 +156,8 @@ All scores strictly in `(0.01, 0.99)`. `[END]` line always includes `score=` fie
 ## Baseline Benchmark
 
 Zero-shot evaluation via `inference.py` (Groq backend, no fine-tuning). Two single-episode samples per model show the core problem: zero-shot LLMs are **inconsistent** and frequently collapse into `summarise_trail` loops instead of navigating the graph.
+
+> Note: the exact scores below are reference runs from before reward hardening. Re-run `inference.py` before final submission so the README plots and tables match the current reward mapping.
 
 ### llama-3.3-70b-versatile (reference runs)
 

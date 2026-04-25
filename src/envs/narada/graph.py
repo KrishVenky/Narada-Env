@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import csv
 import logging
+import os
 import re
 from collections import defaultdict
 from pathlib import Path
@@ -32,12 +33,28 @@ logger = logging.getLogger(__name__)
 # ── Path helpers ──────────────────────────────────────────────────────────────
 
 def _find_data_dir() -> Path:
-    candidates = [
-        Path(__file__).parent.parent.parent.parent.parent / "data",  # /app/data in Docker
-        Path(__file__).parent.parent.parent.parent / "data",
+    """Resolve the on-disk data directory.
+
+    Search order (first match with ``hp.obo`` wins):
+      1. ``NARADA_DATA_DIR`` env var (absolute path, explicit override)
+      2. ``<repo_root>/data`` — four parents up from this file
+         (``.../src/envs/narada/graph.py`` -> ``.../<repo_root>``; in Docker
+         that's ``/app/data``)
+      3. ``<cwd>/data``
+
+    Previous versions also tried a ``parent ** 5`` path, which pointed
+    *above* the repo root (``/`` in Docker, ``C:\`` in dev) and could bind to
+    an unrelated ``data/`` folder silently.
+    """
+    env_override = os.environ.get("NARADA_DATA_DIR")
+    candidates: List[Path] = []
+    if env_override:
+        candidates.append(Path(env_override))
+    candidates.extend([
+        Path(__file__).parent.parent.parent.parent / "data",  # repo root / /app
         Path(__file__).parent.parent.parent / "data",
         Path.cwd() / "data",
-    ]
+    ])
     for p in candidates:
         if p.is_dir() and (p / "hp.obo").exists():
             return p
@@ -59,7 +76,7 @@ PATHWAY_MAP: Dict[str, str] = {
     "TSC1": "neurological", "TSC2": "neurological", "FMR1": "neurological",
     "DMPK": "neurological", "HTT": "neurological", "ATXN1": "neurological",
     "ATXN2": "neurological", "ATXN3": "neurological", "SNCA": "neurological",
-    "LRRK2": "neurological", "PARK2": "neurological", "GBA1": "neurological",
+    "LRRK2": "neurological", "PARK2": "neurological",
     # Metabolic
     "PAH": "metabolic", "PCSK9": "metabolic", "LDLR": "metabolic",
     "APOB": "metabolic", "HMGCR": "metabolic", "GBA1": "metabolic",
@@ -111,7 +128,9 @@ def _clinsig_to_score(clnsig: str) -> float:
     for key, score in sorted(_PATHOGENICITY_SCORES.items(), key=lambda x: -x[1]):
         if key in low:
             return score
-    return 0.7  # fallback
+    # Unknown/benign/conflicting strings fall back to a neutral value so they
+    # are not confused with "likely pathogenic" signal downstream.
+    return 0.5
 
 
 # ── HPO parser ────────────────────────────────────────────────────────────────
@@ -477,38 +496,38 @@ class NaradaGraph:
         self,
         causal_genes: List[str],
         patient_hpo_ids: List[str],
+        causal_allele_ids: Optional[List[str]] = None,
     ) -> Set[str]:
         """
         Returns node IDs considered 'on-path' for a given case.
         Used by the environment to compute step-level rewards.
+
+        When ``causal_allele_ids`` is provided, only those ground-truth variants
+        count as relevant rather than every variant for the causal genes. This
+        keeps hop shaping from rewarding ``gene → any variant`` shortcuts.
         """
         relevant: Set[str] = set()
 
-        # Causal genes and their variants/diseases
+        # Causal genes and diseases directly connected to them.
         for gene in causal_genes:
             gene_id = f"GENE:{gene}"
             if gene_id in self.nodes:
                 relevant.add(gene_id)
-                for v in self.gene_variants.get(gene, []):
-                    relevant.add(f"VAR:{v['allele_id']}")
                 for nid in self.edges.get(gene_id, set()):
                     if self.nodes.get(nid, {}).get("type") == "disease":
                         relevant.add(nid)
-                pathway = self.nodes[gene_id]["metadata"].get("pathway")
-                if pathway and pathway in self._pathway_nodes:
-                    relevant.add(self._pathway_nodes[pathway])
 
-        # Patient phenotype nodes and their ancestors (up to 3 levels)
+        # Ground-truth variants only.
+        if causal_allele_ids:
+            for allele_id in causal_allele_ids:
+                relevant.add(f"VAR:{allele_id}")
+
+        # Patient phenotype nodes and one level of ancestors (for local shaping).
         for hpo_id in patient_hpo_ids:
             relevant.add(hpo_id)
-            queue = list(self.hpo_terms.get(hpo_id, {}).get("parents", []))
-            for _ in range(3):
-                next_queue = []
-                for pid in queue:
-                    if pid in self.nodes:
-                        relevant.add(pid)
-                        next_queue.extend(self.hpo_terms.get(pid, {}).get("parents", []))
-                queue = next_queue
+            for pid in self.hpo_terms.get(hpo_id, {}).get("parents", []):
+                if pid in self.nodes:
+                    relevant.add(pid)
 
         return relevant
 

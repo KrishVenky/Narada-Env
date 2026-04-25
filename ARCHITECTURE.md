@@ -55,8 +55,8 @@ Client                          Server
   ├─── {"type":"reset", ...} ─────►│  generate_case() → PatientCase
   │◄── {"type":"observation"} ─────┤  _build_observation() → StepResult(reward=0.0)
   │                                │
-  ├─── {"type":"step", action} ───►│  _dispatch_action() → step_reward
-  │◄── {"type":"observation"} ─────┤  reward clamped to (0.01, 0.99)
+  ├─── {"type":"step", action} ───►│  _dispatch_action() → raw reward
+  │◄── {"type":"observation"} ─────┤  reward mapped to (0.01, 0.99)
   │         (repeat)               │
   │                                │
   ├─── flag_causal(VAR:xxxxx) ────►│  _compute_terminal_reward() + _overseer_score()
@@ -80,7 +80,7 @@ Client                          Server
 ### oligogenic (medium)
 - 2 causal genes, 5–7 HPO phenotypes, 10–15 candidates
 - Max 25 steps
-- Tests: multi-objective tracking — the agent must flag both contributing variants
+- Tests: multi-objective tracking — the agent must flag both contributing variants; correct intermediate flags are recorded and the episode continues until all are found or a wrong variant is flagged
 
 ### phenotype_mismatch (hard)
 - 1 causal gene (cardiac/neurological)
@@ -111,14 +111,15 @@ Client                          Server
 |---------|--------|
 | Correct flag (monogenic/mismatch) | +1.0 |
 | Correct flag + timing bonus (step < 10) | +1.2 |
-| Partial credit per variant (oligogenic) | `(correct/total) × 0.5` |
+| Progress per correct variant (oligogenic) | `0.5 / total` non-terminal |
+| All oligogenic variants flagged | `(correct/total) × 0.5` + timing bonus |
 | Flagged decoy in mismatch task | −0.5 |
 | Wrong flag | −0.5 |
-| Timeout (no flag) | `min(0.3, trail_size / max_steps × 0.5)` |
+| Timeout (no flag) | `-0.25 + min(0.2, trail_size / max_steps × 0.25)` |
 
 ### Overseer score (additive, 0.0–0.3)
 
-Added to terminal reward. Computed locally without an LLM call:
+Added only to successful terminal rewards. Computed locally without an LLM call:
 
 | Criterion | Effect |
 |-----------|--------|
@@ -126,9 +127,9 @@ Added to terminal reward. Computed locally without an LLM call:
 | Visited < 3 unique nodes | −0.10 |
 | Visited causal gene node | +0.05 |
 
-### Score clamping
+### Score mapping
 
-All rewards are clamped to the **open interval (0.01, 0.99)** before returning to the client. `math.isfinite()` guards against NaN/inf. This is required by the OpenEnv validator.
+Rewards are kept as signed raw values internally, then mapped to the **open interval (0.01, 0.99)** before returning to the client. This preserves the ordering between penalties, neutral moves, and successes while satisfying the OpenEnv validator. `math.isfinite()` guards against NaN/inf.
 
 ---
 
@@ -140,9 +141,9 @@ All rewards are clamped to the **open interval (0.01, 0.99)** before returning t
 - Trained via `training/narada_grpo.ipynb`
 
 ### Overseer (local)
-- Evaluates reasoning quality from the action log
+- Heuristic, no LLM call: reads only the trail and hop counters, not the free-form `reasoning` string
 - Penalises hallucinated hops and trivial exploration
-- Adds 0.0–0.3 to the terminal reward
+- Adds 0.0–0.3 only to successful terminal rewards
 
 ### Adversary (exploratory, WIP)
 - Intended to generate harder cases targeting Detective failure patterns

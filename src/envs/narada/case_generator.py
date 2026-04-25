@@ -6,7 +6,7 @@ Each case is a dict matching PatientCase structure.
 
 Task types:
   monogenic          — single causal gene, 3-4 phenotypes, 5-8 candidates
-  oligogenic         — 2-3 causal genes, 5-7 phenotypes, 10-15 candidates
+  oligogenic         — 2 causal genes (one variant each), 5-7 phenotypes, 10-15 candidates
   phenotype_mismatch — cardiac patient + high-pathogenicity cancer decoy
 """
 
@@ -187,8 +187,8 @@ def generate_monogenic_case(
     else:
         raise RuntimeError(f"No variants found for any gene in {disease['disease']}")
 
-    # Ground truth: pick 1-2 causal variants
-    causal_raw = _pick_variants(graph, [causal_gene], n=2, prefer_high_impact=True, rng=rng)
+    # Ground truth: one causal variant for the single-gene tier.
+    causal_raw = _pick_variants(graph, [causal_gene], n=1, prefer_high_impact=True, rng=rng)
     if not causal_raw:
         raise RuntimeError(f"No variants for {causal_gene}")
     causal_allele_ids = [v["allele_id"] for v in causal_raw]
@@ -228,7 +228,11 @@ def generate_monogenic_case(
     candidates = [_variant_to_model(v, graph) for v in all_raw]
 
     starting_node = _find_starting_node(graph, hpo_ids, rng)
-    relevant = graph.relevant_nodes_for_case(causal_genes=[causal_gene], patient_hpo_ids=hpo_ids)
+    relevant = graph.relevant_nodes_for_case(
+        causal_genes=[causal_gene],
+        patient_hpo_ids=hpo_ids,
+        causal_allele_ids=causal_allele_ids,
+    )
 
     return PatientCase(
         case_id=str(uuid.uuid4())[:8],
@@ -250,31 +254,32 @@ def generate_oligogenic_case(
     graph: NaradaGraph,
     rng: Optional[random.Random] = None,
 ) -> PatientCase:
-    """2-3 causal genes, 5-7 phenotypes, 10-15 candidates."""
+    """2 causal genes (one variant each), 5-7 phenotypes, 10-15 candidates."""
     if rng is None:
         rng = random.Random()
 
-    eligible = [d for d in DISEASE_CATALOG if "oligogenic" in d["task_types"] and len(d["genes"]) >= 2]
-    disease = rng.choice(eligible)
+    # Only accept diseases whose catalog lists >=2 genes AND where at least
+    # two of those genes actually have ClinVar variants in the loaded data.
+    # Without this filter the oligogenic tier can silently degrade to a
+    # single-gene case and violate the "flag both variants" contract.
+    eligible = []
+    for d in DISEASE_CATALOG:
+        if "oligogenic" not in d["task_types"] or len(d["genes"]) < 2:
+            continue
+        with_variants = [g for g in d["genes"] if graph.get_variants_for_gene(g)]
+        if len(with_variants) >= 2:
+            eligible.append((d, with_variants))
+    if not eligible:
+        raise RuntimeError("No oligogenic diseases have >=2 genes with variants")
+    disease, genes_with_variants = rng.choice(eligible)
 
-    # Pick 2 causal genes that have variants
-    causal_genes = []
-    for gene in rng.sample(disease["genes"], len(disease["genes"])):
-        if graph.get_variants_for_gene(gene):
-            causal_genes.append(gene)
-        if len(causal_genes) == 2:
-            break
+    causal_genes = rng.sample(genes_with_variants, 2)
 
-    if len(causal_genes) < 2:
-        causal_genes = [g for g in disease["genes"] if graph.get_variants_for_gene(g)][:2]
-    if not causal_genes:
-        raise RuntimeError(f"No variants for genes in {disease['disease']}")
-
-    # 1-2 causal variants per gene
+    # One causal variant per contributing gene.
     causal_raw = []
     causal_allele_ids = []
     for gene in causal_genes:
-        vs = _pick_variants(graph, [gene], n=2, prefer_high_impact=True, rng=rng)
+        vs = _pick_variants(graph, [gene], n=1, prefer_high_impact=True, rng=rng)
         causal_raw.extend(vs)
         causal_allele_ids.extend(v["allele_id"] for v in vs)
 
@@ -314,7 +319,11 @@ def generate_oligogenic_case(
     candidates = [_variant_to_model(v, graph) for v in all_raw[:15]]
 
     starting_node = _find_starting_node(graph, hpo_ids, rng)
-    relevant = graph.relevant_nodes_for_case(causal_genes=causal_genes, patient_hpo_ids=hpo_ids)
+    relevant = graph.relevant_nodes_for_case(
+        causal_genes=causal_genes,
+        patient_hpo_ids=hpo_ids,
+        causal_allele_ids=causal_allele_ids,
+    )
 
     return PatientCase(
         case_id=str(uuid.uuid4())[:8],
@@ -354,8 +363,8 @@ def generate_mismatch_case(
     else:
         raise RuntimeError(f"No variants for {disease['disease']}")
 
-    # Causal variants
-    causal_raw = _pick_variants(graph, [causal_gene], n=2, prefer_high_impact=True, rng=rng)
+    # Causal variant
+    causal_raw = _pick_variants(graph, [causal_gene], n=1, prefer_high_impact=True, rng=rng)
     causal_allele_ids = [v["allele_id"] for v in causal_raw]
 
     # Patient phenotypes: 4-6 terms
@@ -372,9 +381,8 @@ def generate_mismatch_case(
     # DECOY: pick a high-pathogenicity BRCA1/BRCA2 frameshift
     decoy_gene = rng.choice([g for g in _DECOY_GENES if graph.get_variants_for_gene(g)])
     decoy_raw = _pick_variants(graph, [decoy_gene], n=2, prefer_high_impact=True, rng=rng)
-    # Boost decoy pathogenicity score for maximum LLM temptation
-    for v in decoy_raw:
-        v = dict(v)  # copy to avoid mutating global cache
+    # Boost decoy salience without mutating the graph cache.
+    decoy_raw = [dict(v, clnsig="Pathogenic") for v in decoy_raw]
 
     # Same-pathway distractors
     target_pathway = disease["pathway"]
@@ -404,7 +412,11 @@ def generate_mismatch_case(
     candidates = [_variant_to_model(v, graph) for v in all_raw[:15]]
 
     starting_node = _find_starting_node(graph, hpo_ids, rng)
-    relevant = graph.relevant_nodes_for_case(causal_genes=[causal_gene], patient_hpo_ids=hpo_ids)
+    relevant = graph.relevant_nodes_for_case(
+        causal_genes=[causal_gene],
+        patient_hpo_ids=hpo_ids,
+        causal_allele_ids=causal_allele_ids,
+    )
 
     return PatientCase(
         case_id=str(uuid.uuid4())[:8],
