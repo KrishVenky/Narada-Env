@@ -12,7 +12,32 @@ pinned: false
 
 **Meta × PyTorch OpenEnv Hackathon × Scaler School of Technology — Grand Finale**
 
-**Live environment:** [krishvenky-narada-env.hf.space](https://krishvenky-narada-env.hf.space)
+**Live environment:** [krishvenky-narada-env.hf.space](https://krishvenky-narada-env.hf.space) · **Blog:** [Blog.md](Blog.md) · **Training notebook:** [narada_grpo.ipynb](training/narada_grpo.ipynb)
+
+---
+
+## Results
+
+GRPO training on Qwen3-1.7B (LoRA rank 16, 200 steps curriculum) vs zero-shot baseline:
+
+| Task | Baseline | After GRPO | Gain |
+|---|---|---|---|
+| monogenic | 0.4955 | **0.572** | +15.4% |
+| oligogenic | 0.4955 | **0.561** | +13.2% |
+| phenotype_mismatch | 0.4955 | **0.552** | +11.4% |
+| **Average** | 0.4955 | **0.562** | **+13.3%** |
+
+![Before/After GRPO](results/before_after.png)
+*Zero-shot baseline vs. trained agent across all three task tiers*
+
+![Reward Curve](results/reward_curve.png)
+*Mean reward across 200 training steps (curriculum order). Shaded region = reward_std. Dotted line = zero-shot baseline.*
+
+![Loss Curve](results/loss_curve.png)
+*Policy loss across curriculum. Phase boundaries shown as dashed vertical lines.*
+
+![Reward Std](results/reward_std.png)
+*reward_std > 0 throughout confirms GRPO received real gradient signal — model never collapsed to uniform reward.*
 
 ---
 

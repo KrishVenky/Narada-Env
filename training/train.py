@@ -21,8 +21,16 @@ import os
 import re
 import sys
 import textwrap
+import threading
 import time
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any, Dict, List, Optional
+
+# Must come before transformers/torchao: torchao 0.17+ calls register_constant
+# which was added in PyTorch 2.7. Stub it so the import chain works on 2.6.
+import torch
+if not hasattr(torch.utils._pytree, "register_constant"):
+    torch.utils._pytree.register_constant = lambda cls: cls
 
 from transformers import TrainerCallback, TrainerControl, TrainerState, TrainingArguments
 
@@ -30,13 +38,6 @@ import nest_asyncio
 nest_asyncio.apply()
 
 import websockets
-import torch
-
-# torchao 0.17+ uses torch.utils._pytree.register_constant, added in PyTorch 2.7.
-# Stub it out so the import works on PyTorch 2.6 (we use bitsandbytes, not torchao).
-if not hasattr(torch.utils._pytree, "register_constant"):
-    torch.utils._pytree.register_constant = lambda cls: cls
-
 from datasets import Dataset
 from unsloth import FastLanguageModel
 
@@ -541,5 +542,18 @@ def main() -> None:
         print(f"  {task:<23} {b:>10.4f} {t:>10.4f} {t-b:>+10.4f}", flush=True)
 
 
+class _HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Training in progress...")
+    def log_message(self, *args):
+        pass
+
+
 if __name__ == "__main__":
+    threading.Thread(
+        target=lambda: HTTPServer(("0.0.0.0", 7860), _HealthHandler).serve_forever(),
+        daemon=True,
+    ).start()
     main()
