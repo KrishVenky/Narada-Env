@@ -12,7 +12,7 @@ pinned: false
 
 **Meta × PyTorch OpenEnv Hackathon × Scaler School of Technology — Grand Finale**
 
-**Live environment:** [krishvenky-narada-env.hf.space](https://krishvenky-narada-env.hf.space) · **Blog:** [Blog.md](Blog.md) · **Training notebook:** [narada_grpo.ipynb](training/narada_grpo.ipynb)
+**Live environment:** [krishvenky-narada-env.hf.space](https://huggingface.co/spaces/KrishVenky/narada-env) · **Blog:** [Blog.md](https://huggingface.co/spaces/KrishVenky/narada-env/blob/main/Blog.md) · **Colab training notebook:** [Open in Colab](https://colab.research.google.com/drive/15tPrE95ASXcBA2zKImWgmRoFM0OozPQm?usp=sharing)
 
 ---
 
