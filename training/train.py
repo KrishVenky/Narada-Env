@@ -24,6 +24,8 @@ import textwrap
 import time
 from typing import Any, Dict, List, Optional
 
+from transformers import TrainerCallback, TrainerControl, TrainerState, TrainingArguments
+
 import nest_asyncio
 nest_asyncio.apply()
 
@@ -221,6 +223,23 @@ def collect_episode(task_type: str, seed: Optional[int] = None) -> List[Dict]:
     return asyncio.get_event_loop().run_until_complete(collect_episode_async(task_type, seed))
 
 
+# ── Reward tracker callback ───────────────────────────────────────────────────
+
+class RewardTracker(TrainerCallback):
+    def __init__(self, phase: str, log: List[Dict]):
+        self.phase = phase
+        self.log   = log
+
+    def on_log(self, args: TrainingArguments, state: TrainerState,
+               control: TrainerControl, logs=None, **kwargs):
+        if logs is None:
+            return
+        step   = state.global_step
+        reward = logs.get("reward", logs.get("train/reward", None))
+        if reward is not None:
+            self.log.append({"phase": self.phase, "step": step, "reward": float(reward)})
+
+
 # ── Reward function ───────────────────────────────────────────────────────────
 
 def clamp(v: float, lo: float = 0.01, hi: float = 0.99) -> float:
@@ -291,28 +310,35 @@ def main() -> None:
     tokenizer.apply_chat_template = _no_think
     print("Thinking mode disabled.", flush=True)
 
-    # ── Build dataset ─────────────────────────────────────────────────────────
+    # ── Build dataset (parallel collection) ──────────────────────────────────
     import random
     random.seed(42)
     train_seeds = random.sample(range(1, 10000), N_SEEDS_PER_TASK * 3)
 
-    all_prompts = []
-    for i, phase in enumerate(CURRICULUM):
-        task  = phase["task"]
-        seeds = train_seeds[i * N_SEEDS_PER_TASK : (i + 1) * N_SEEDS_PER_TASK]
-        print(f"Collecting {N_SEEDS_PER_TASK} prompts for task={task}...", flush=True)
-        for seed in seeds:
-            steps = collect_episode(task, seed=seed)
-            if steps:
-                all_prompts.append({
-                    "prompt": [
-                        {"role": "system", "content": SYSTEM_PROMPT},
-                        {"role": "user",   "content": steps[0]["prompt"]},
-                    ],
-                    "task_type": task,
-                    "seed":      seed,
-                })
+    async def _collect_one(task: str, seed: int) -> Optional[Dict]:
+        steps = await collect_episode_async(task, seed=seed)
+        if not steps:
+            return None
+        return {
+            "prompt":    [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user",   "content": steps[0]["prompt"]},
+            ],
+            "task_type": task,
+            "seed":      seed,
+        }
 
+    async def _collect_all() -> List[Dict]:
+        pairs = []
+        for i, phase in enumerate(CURRICULUM):
+            task = phase["task"]
+            for seed in train_seeds[i * N_SEEDS_PER_TASK : (i + 1) * N_SEEDS_PER_TASK]:
+                pairs.append((task, seed))
+        results = await asyncio.gather(*[_collect_one(t, s) for t, s in pairs])
+        return [r for r in results if r is not None]
+
+    print(f"Collecting {N_SEEDS_PER_TASK * len(CURRICULUM)} prompts in parallel...", flush=True)
+    all_prompts = asyncio.get_event_loop().run_until_complete(_collect_all())
     dataset = Dataset.from_list(all_prompts)
     print(f"Dataset: {len(dataset)} prompts", flush=True)
 
@@ -341,8 +367,39 @@ def main() -> None:
         report_to                   = "none",
     )
 
+    # ── Zero-shot baseline (before any training) ─────────────────────────────
+    print(f"\n{'='*60}", flush=True)
+    print("BASELINE (zero-shot, untrained LoRA weights)", flush=True)
+    print(f"{'='*60}", flush=True)
+    FastLanguageModel.for_inference(model)
+    baseline_results: Dict[str, float] = {}
+    for phase in CURRICULUM:
+        task = phase["task"]
+        scores = []
+        for es in EVAL_SEEDS:
+            steps = collect_episode(task, seed=es)
+            if not steps:
+                continue
+            messages = [
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user",   "content": steps[0]["prompt"]},
+            ]
+            inputs = tokenizer.apply_chat_template(
+                messages, tokenize=True, add_generation_prompt=True, return_tensors="pt"
+            ).to("cuda")
+            with torch.no_grad():
+                out = model.generate(inputs, max_new_tokens=200, temperature=0.3)
+            completion = tokenizer.decode(out[0][inputs.shape[1]:], skip_special_tokens=True)
+            scores.append(run_episode(task, [parse_action(completion)], seed=es))
+        avg = sum(scores) / len(scores) if scores else 0.0
+        baseline_results[task] = avg
+        print(f"Baseline {task}: {avg:.4f}  (n={len(scores)})", flush=True)
+    FastLanguageModel.for_training(model)
+
     # ── Curriculum training ───────────────────────────────────────────────────
     eval_results: Dict[str, float] = {}
+    reward_log:   List[Dict]       = []
+    step_offset = 0
 
     for phase in CURRICULUM:
         task    = phase["task"]
@@ -359,16 +416,21 @@ def main() -> None:
 
         grpo_config.max_steps = n_steps
 
+        tracker = RewardTracker(task, reward_log)
+        tracker._step_offset = step_offset
+
         trainer = GRPOTrainer(
             model            = model,
             processing_class = tokenizer,
             reward_funcs     = narada_reward,
             args             = grpo_config,
             train_dataset    = phase_data,
+            callbacks        = [tracker],
         )
 
         t0 = time.time()
         trainer.train()
+        step_offset += n_steps
         print(f"Phase {task} done in {(time.time()-t0)/60:.1f} min", flush=True)
 
         # Eval
@@ -395,7 +457,7 @@ def main() -> None:
         print(f"Eval {task}: {avg:.4f}  (n={len(scores)})", flush=True)
         FastLanguageModel.for_training(model)
 
-    # ── Save & push ───────────────────────────────────────────────────────────
+    # ── Save & push adapter ───────────────────────────────────────────────────
     model.save_pretrained(ADAPTER_NAME)
     tokenizer.save_pretrained(ADAPTER_NAME)
     print(f"\nAdapter saved locally to ./{ADAPTER_NAME}", flush=True)
@@ -404,9 +466,79 @@ def main() -> None:
     tokenizer.push_to_hub(HF_PUSH_REPO, token=HF_TOKEN)
     print(f"Pushed to https://huggingface.co/{HF_PUSH_REPO}", flush=True)
 
+    # ── Generate training curves ──────────────────────────────────────────────
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        colors = {"monogenic": "#2196F3", "oligogenic": "#FF9800", "phenotype_mismatch": "#E91E63"}
+
+        # ── Fig 1: reward over all steps (curriculum) ─────────────────────────
+        fig, ax = plt.subplots(figsize=(10, 5))
+        global_step = 0
+        for phase in CURRICULUM:
+            task = phase["task"]
+            pts  = [(e["step"] + global_step, e["reward"])
+                    for e in reward_log if e["phase"] == task]
+            if pts:
+                xs, ys = zip(*pts)
+                ax.plot(xs, ys, "o-", color=colors[task], label=task, linewidth=1.5, markersize=3)
+            global_step += phase["steps"]
+        ax.set_xlabel("Training step")
+        ax.set_ylabel("Mean reward")
+        ax.set_title("Narada GRPO — reward curve (curriculum order)")
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        fig.tight_layout()
+        fig.savefig("training_curve.png", dpi=150)
+        plt.close(fig)
+
+        # ── Fig 2: per-task before/after bar chart ─────────────────────────────
+        tasks_list = [p["task"] for p in CURRICULUM]
+        x          = range(len(tasks_list))
+        w          = 0.35
+        fig2, ax2  = plt.subplots(figsize=(9, 5))
+        ax2.bar([i - w/2 for i in x],
+                [baseline_results.get(t, 0) for t in tasks_list],
+                w, label="Zero-shot baseline", color="#90A4AE")
+        ax2.bar([i + w/2 for i in x],
+                [eval_results.get(t, 0) for t in tasks_list],
+                w, label="After GRPO", color="#43A047")
+        ax2.set_xticks(list(x))
+        ax2.set_xticklabels(tasks_list)
+        ax2.set_ylabel("Avg reward (5 eval seeds)")
+        ax2.set_title("Narada — zero-shot vs GRPO-trained (Qwen3-1.7B)")
+        ax2.set_ylim(0, 1.0)
+        ax2.legend()
+        ax2.grid(True, axis="y", alpha=0.3)
+        fig2.tight_layout()
+        fig2.savefig("before_after.png", dpi=150)
+        plt.close(fig2)
+        print("Plots saved: training_curve.png, before_after.png", flush=True)
+
+        # Upload plots to the adapter repo
+        from huggingface_hub import HfApi
+        api = HfApi(token=HF_TOKEN)
+        for fname in ("training_curve.png", "before_after.png"):
+            api.upload_file(
+                path_or_fileobj=fname,
+                path_in_repo=fname,
+                repo_id=HF_PUSH_REPO,
+                repo_type="model",
+                commit_message=f"add {fname}",
+            )
+        print(f"Plots uploaded to https://huggingface.co/{HF_PUSH_REPO}", flush=True)
+    except Exception as e:
+        print(f"Plot generation skipped: {e}", flush=True)
+
     print("\n=== TRAINING COMPLETE ===", flush=True)
-    for task, score in eval_results.items():
-        print(f"  {task:25s}: {score:.4f}", flush=True)
+    print(f"{'Task':<25} {'Baseline':>10} {'Trained':>10} {'Delta':>10}", flush=True)
+    print("-" * 57, flush=True)
+    for task in [p["task"] for p in CURRICULUM]:
+        b = baseline_results.get(task, 0.0)
+        t = eval_results.get(task, 0.0)
+        print(f"  {task:<23} {b:>10.4f} {t:>10.4f} {t-b:>+10.4f}", flush=True)
 
 
 if __name__ == "__main__":

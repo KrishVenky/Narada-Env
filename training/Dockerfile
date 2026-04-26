@@ -15,7 +15,8 @@ RUN pip install --no-cache-dir \
     "nest_asyncio>=1.6.0" \
     "datasets>=2.18.0" \
     "transformers>=4.40.0" \
-    "huggingface_hub>=0.22.0"
+    "huggingface_hub>=0.22.0" \
+    "matplotlib>=3.7.0"
 
 RUN pip install --no-cache-dir unsloth_zoo && \
     pip install --no-cache-dir \
